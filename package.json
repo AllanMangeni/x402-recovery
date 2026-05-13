@@ -1,6 +1,6 @@
 {
   "name": "x402-recovery",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "TypeScript middleware for the x402 payment protocol settlement recovery, using environment profiles and an in-memory state machine.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
