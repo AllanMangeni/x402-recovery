@@ -1,0 +1,38 @@
+{
+  "name": "x402-recovery",
+  "version": "0.0.0",
+  "description": "TypeScript middleware for x402 payment protocol settlement recovery",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc --noEmit"
+  },
+  "keywords": [
+    "x402",
+    "payment",
+    "settlement",
+    "recovery",
+    "middleware"
+  ],
+  "author": "Allan Mang'eni Wanyonyi",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AllanMangeni/x402-recovery.git"
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "express": "^4.21.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^3.0.0"
+  }
+}
