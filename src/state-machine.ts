@@ -1,16 +1,20 @@
-import { SettlementState, SettlementProfile, PROFILES } from './types';
+import { SettlementState, SettlementProfile, PROFILES, EnvironmentProfile } from './types';
 
 export interface SettlementRecord {
   id: string;
   state: SettlementState;
   profile: SettlementProfile;
+  txHash?: string;
+  validBefore?: number;
   createdAt: number;
   updatedAt: number;
-  confirmations: number;
 }
 
 export interface StateMachine {
-  create(id: string, profileName?: string): SettlementRecord;
+  create(
+    id: string,
+    options?: { profileName?: EnvironmentProfile; txHash?: string; validBefore?: number },
+  ): SettlementRecord;
   get(id: string): SettlementRecord | undefined;
   transition(id: string, newState: SettlementState): SettlementRecord;
   list(): SettlementRecord[];
@@ -19,7 +23,7 @@ export interface StateMachine {
 export function createSettlementStateMachine(): StateMachine {
   const records = new Map<string, SettlementRecord>();
 
-  function resolveProfile(profileName: string): SettlementProfile {
+  function resolveProfile(profileName: EnvironmentProfile): SettlementProfile {
     const profile = PROFILES[profileName];
     if (!profile) {
       throw new Error(`Unknown settlement profile: ${profileName}`);
@@ -28,19 +32,24 @@ export function createSettlementStateMachine(): StateMachine {
   }
 
   return {
-    create(id: string, profileName = 'standard'): SettlementRecord {
+    create(
+      id: string,
+      options?: { profileName?: EnvironmentProfile; txHash?: string; validBefore?: number },
+    ): SettlementRecord {
       if (records.has(id)) {
         throw new Error(`Settlement ${id} already exists`);
       }
+      const profileName = options?.profileName ?? 'datacenter';
       const profile = resolveProfile(profileName);
       const now = Date.now();
       const record: SettlementRecord = {
         id,
         state: SettlementState.Pending,
         profile,
+        txHash: options?.txHash,
+        validBefore: options?.validBefore,
         createdAt: now,
         updatedAt: now,
-        confirmations: 0,
       };
       records.set(id, record);
       return record;
