@@ -26,6 +26,9 @@
   "files": [
     "dist"
   ],
+  "dependencies": {
+    "viem": "^2.0.0"
+  },
   "peerDependencies": {
     "express": "^4.21.0"
   },
