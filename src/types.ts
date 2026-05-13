@@ -36,4 +36,11 @@ export const PROFILES = {
   },
 };
 
+export interface SettlementContext {
+  settlementId: string;
+  txHash: string;
+  validBefore?: number;
+  timedOut: boolean;
+}
+
 export type EnvironmentProfile = keyof typeof PROFILES;
