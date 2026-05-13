@@ -1,44 +1,36 @@
 # x402-recovery
 
-Settlement recovery middleware for the [x402](https://x402.org) payment protocol.
+Settlement recovery middleware for the [x402](https://x402.org/) payment protocol, built for low-connectivity and mobile-money-adjacent markets.
 
-## The Problem: x402 Two-Phase Gap
+## Why this exists
 
-x402 payments involve two phases:
-1. A **facilitator** processes the payment off-chain and provides an immediate timeout response.
-2. **On-chain settlement** happens asynchronously on Base or Base Sepolia.
+x402 separates verify and settle phases to keep latency low. When the facilitator times out but the transaction later confirms on-chain, clients can see a definite failure while the chain shows success. That Two-Phase Gap causes duplicate work, manual recovery, and working capital risk in variable networks. This library closes that gap at the middleware layer without changing on-chain guarantees.
 
-If the facilitator gives a timeout response but the transaction later settles on-chain, the payment must still be recognised. This library closes that recovery gap by polling the blockchain for the transaction outcome and updating a state machine that upstream services can observe.
+For bridges linking mobile money rails to x402 settlement, idempotency keys link mobile money txids to x402 nonces so either system can independently recover the settlement state after a drop.
 
-## Settlement States
+## Where this fits
 
-The in-memory state machine tracks seven states:
+[Amazon Bedrock AgentCore Payments](https://aws.amazon.com/blogs/machine-learning/agents-that-transact-introducing-amazon-bedrock-agentcore-payments-built-with-coinbase-and-stripe/) covers the happy path and managed wallets in preview regions. It does not address African mobile rails or higher facilitator timeouts on 3G. [x402](https://x402.org/) makes the payment primitive portable, and x402-recovery is the recovery layer that keeps resource delivery safe when a facilitator times out and the on-chain outcome is unknown.
 
-| State               | Meaning                                                      |
-|---------------------|--------------------------------------------------------------|
-| `pending`           | Record created, polling not yet started                      |
-| `polling`           | RPC polling is in progress                                   |
-| `confirmed`         | On-chain receipt succeeded within the facilitator timeout    |
-| `confirmed_late`    | On-chain receipt succeeded after the facilitator timeout     |
-| `unresolved`        | Fatal RPC error — manual intervention required               |
-| `failed`            | Transaction reverted or poll window expired                  |
-| `failed_orphaned`   | Poll window expired after `validBefore` — settlement expired |
+## States
 
-## Environment Profiles
+| State | Meaning |
+|---|---|
+| pending | Record created, polling not started |
+| polling | RPC polling in progress |
+| confirmed | On-chain receipt succeeded within facilitator timeout |
+| confirmed_late | On-chain receipt succeeded after facilitator timeout |
+| unresolved | Fatal RPC error; manual review needed |
+| failed | Transaction reverted or poll window expired |
+| failed_orphaned | Poll window expired after validBefore; authorization expired |
 
-Three environment profiles adapt timeout, poll interval, and poll window to expected network conditions:
+## Environment profiles
 
-| Profile           | Facilitator timeout | Poll interval | Max poll window |
-|-------------------|---------------------|---------------|-----------------|
-| `datacenter`      | 5 s                 | 2 s           | 30 s            |
-| `east_africa_3g`  | 15 s                | 5 s           | 90 s            |
-| `west_africa_3g`  | 15 s                | 5 s           | 90 s            |
-
-## Implementation
-
-- **In-memory state machine** (`src/state-machine.ts`) — thread-safe map of settlement records with create/transition/get/list operations.
-- **viem-based poller** (`src/poller.ts`) — calls `getTransactionReceipt` on a `PublicClient`, maps statuses to states, and accepts an injectable `now()` function for deterministic testing.
-- **Express middleware** (`src/middleware.ts`) — detects `res.locals.x402Settlement.timedOut === true` after upstream handlers complete and kicks off the poller as a fire-and-forget async branch.
+| Profile | Facilitator timeout | Poll interval | Max poll window |
+|---|---:|---:|---:|
+| datacenter | 5s | 2s | 30s |
+| east_africa_3g | 15s | 5s | 90s |
+| west_africa_3g | 15s | 5s | 90s |
 
 ## Installation
 
@@ -48,7 +40,7 @@ npm install x402-recovery
 
 ## Usage
 
-### 1. State machine (standalone)
+### State machine
 
 ```ts
 import { createSettlementStateMachine, SettlementState } from 'x402-recovery';
@@ -58,7 +50,7 @@ const machine = createSettlementStateMachine();
 const record = machine.create('tx-001', {
   profileName: 'east_africa_3g',
   txHash: '0xabc...',
-  validBefore: 1700000000,
+  validBefore: Date.now() + 90_000,
 });
 
 console.log(record.state); // SettlementState.Pending
@@ -66,19 +58,22 @@ console.log(record.state); // SettlementState.Pending
 machine.transition('tx-001', SettlementState.Confirmed);
 ```
 
-### 2. Poller (standalone)
+### Poller
 
 ```ts
 import { createPublicClient, http } from 'viem';
 import { baseSepolia } from 'viem/chains';
 import { pollUntilResolved, createSettlementStateMachine, PROFILES } from 'x402-recovery';
 
+const rpcUrl = process.env.BASE_RPC_URL || 'https://sepolia.base.org';
+
 const client = createPublicClient({
   chain: baseSepolia,
-  transport: http('https://sepolia.base.org'),
+  transport: http(rpcUrl),
 });
 
 const machine = createSettlementStateMachine();
+
 machine.create('settlement-1', {
   profileName: 'datacenter',
   txHash: '0xdead...',
@@ -94,12 +89,10 @@ await pollUntilResolved({
 });
 
 const record = machine.get('settlement-1');
-console.log(record?.state); // Confirmed | ConfirmedLate | Failed | ...
+console.log(record?.state);
 ```
 
-### 3. Express middleware
-
-The middleware relies on an **upstream handler contract**: after processing a request, the handler attaches settlement details to `res.locals.x402Settlement`. When `timedOut` is `true`, the middleware registers the record and starts polling.
+### Express middleware
 
 ```ts
 import express from 'express';
@@ -107,16 +100,14 @@ import { createRecoveryMiddleware } from 'x402-recovery';
 
 const app = express();
 
-const recovery = createRecoveryMiddleware({
-  profile: 'east_africa_3g',
-  rpcUrl: process.env.BASE_RPC_URL!,
-});
-
-app.use(recovery);
+app.use(
+  createRecoveryMiddleware({
+    profile: 'east_africa_3g',
+    rpcUrl: process.env.BASE_RPC_URL!,
+  }),
+);
 
 app.get('/pay', (req, res) => {
-  // Facilitator gave a timeout response, but the transaction was submitted.
-  // Attach settlement context so the recovery middleware picks it up.
   res.locals.x402Settlement = {
     settlementId: req.headers['x-request-id'] as string,
     txHash: '0x...',
@@ -130,60 +121,76 @@ app.get('/pay', (req, res) => {
 app.listen(3000);
 ```
 
-#### Viem client wiring
+The middleware reads `res.locals.x402Settlement` after `next()` and starts recovery internally when `timedOut === true`.
 
-The middleware creates a `PublicClient` from `config.rpcUrl` at construction time. For testability, pass a pre-built `client`:
+## Handling missing txHash
 
-```ts
-import { createPublicClient, http } from 'viem';
-import { baseSepolia } from 'viem/chains';
-
-const client = createPublicClient({
-  chain: baseSepolia,
-  transport: http('https://sepolia.base.org'),
-});
-
-const middleware = createRecoveryMiddleware({
-  profile: 'datacenter',
-  client, // used instead of rpcUrl
-});
-```
-
-### SettlementContext type
-
-The `SettlementContext` interface defines the handoff contract between upstream handlers and the middleware:
+Some facilitator responses may omit `txHash`. In that case, the middleware should register the settlement and mark it `unresolved` rather than polling. Recovery needs an on-chain transaction id to continue.
 
 ```ts
-interface SettlementContext {
-  settlementId: string;
-  txHash: string;
-  validBefore?: number;
-  timedOut: boolean;
+if (!settlementContext.txHash) {
+  machine.create(settlementContext.settlementId, {
+    profileName: profile,
+    validBefore: settlementContext.validBefore,
+  });
+  machine.transition(settlementContext.settlementId, SettlementState.Unresolved);
+  return;
 }
 ```
 
-## Project Structure
+## Observability
 
-```
+Emit structured events keyed by `settlementId`:
+
+- `settlement.registered`
+- `settlement.poll.started`
+- `settlement.poll.result`
+- `settlement.final`
+
+Recommended fields:
+- `settlementId`
+- `profile`
+- `txHash` if available
+- `validBefore`
+- `attempt`
+- `receiptStatus`
+- `blockNumber`
+- `finalState`
+
+Use OpenTelemetry traces so facilitator responses, middleware events, and on-chain receipts can be correlated end to end.
+
+## Notes and limitations
+
+- In-memory state only.
+- Poller runs as fire-and-forget. Long poll windows should move to a job queue.
+- Middleware assumes the upstream handler sets `timedOut`.
+- `txHash` may be absent. Mark those cases `unresolved` for manual review.
+- Horizontal scaling needs an external coordination layer.
+
+## Project structure
+
+```text
 src/
-  types.ts          — SettlementState, SettlementProfile, PROFILES, SettlementContext
-  state-machine.ts  — In-memory state machine (StateMachine, SettlementRecord)
-  poller.ts         — viem-based RPC polling loop (pollUntilResolved)
-  middleware.ts      — Express middleware with timedOut trigger
-  index.ts          — Public API exports
+  types.ts         SettlementState, SettlementProfile, PROFILES, SettlementContext
+  state-machine.ts In-memory state machine
+  poller.ts        viem-based RPC polling loop
+  middleware.ts    Express middleware with timedOut trigger
+  index.ts         Public API exports
 test/
   state-machine.test.ts
   poller.test.ts
   middleware.test.ts
 ```
 
-## Limitations
+## Related reading
 
-- **In-memory only** — No persistence. Records are lost on process restart. Replace with a database-backed store for production.
-- **No queues or retries** — The poller runs synchronously in the request cycle (fire-and-forget). Background workers and retry logic are not included.
-- **Minimal middleware handoff** — The middleware only triggers on `res.locals.x402Settlement.timedOut === true`. Deeper integration (e.g. automatic timeout detection, request lifecycle hooks) is left to the caller.
-- **No telemetry** — Errors in the fire-and-forget poller branch are silently swallowed.
-- **Single-machine scope** — One middleware instance creates one `StateMachine`. Multi-process deployments need external coordination.
+- [NDSS 2026 Two-Phase Gap poster](https://www.ndss-symposium.org/wp-content/uploads/ndss26-poster-51.pdf)
+- [x402 Foundation discussion](https://github.com/x402-foundation/x402/issues/2294)
+- [x402-migration-architecture-example](https://github.com/AllanMangeni/x402-migration-architecture-example)
+
+## Contributing
+
+Small, focused PRs are welcome. Keep changes scoped to docs, adapter examples, or tests.
 
 ## License
 
@@ -191,4 +198,4 @@ Apache 2.0
 
 ## Author
 
-Allan Mang'eni Wanyonyi
+Allan Mang'eni
