@@ -70,6 +70,23 @@ export function canonicalKey(ctx: {
   return `${ctx.payer}:${ctx.payTo}:${ctx.value}:${ctx.nonce}`;
 }
 
+export function defineProfile(profile: {
+  name: string;
+  facilitatorTimeoutMs: number;
+  pollIntervalMs: number;
+  maxPollWindowMs: number;
+}): SettlementProfile {
+  if (profile.pollIntervalMs >= profile.maxPollWindowMs) {
+    throw new Error(
+      `defineProfile: pollIntervalMs (${profile.pollIntervalMs}) must be less than maxPollWindowMs (${profile.maxPollWindowMs})`
+    );
+  }
+  if (profile.facilitatorTimeoutMs <= 0 || profile.pollIntervalMs <= 0 || profile.maxPollWindowMs <= 0) {
+    throw new Error('defineProfile: all timing values must be greater than 0');
+  }
+  return profile;
+}
+
 export interface TransitionEvent {
   settlementId: string;
   from: SettlementState;

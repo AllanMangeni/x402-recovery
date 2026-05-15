@@ -2,7 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { PublicClient, createPublicClient, http } from 'viem';
 import { createSettlementStateMachine } from './state-machine';
 import { pollUntilResolved } from './poller';
-import { PROFILES, ProfileName, SettlementState, SettlementContext } from './types';
+import { PROFILES, ProfileName, SettlementState, SettlementProfile, SettlementContext } from './types';
 
 declare global {
   namespace Express {
@@ -13,7 +13,7 @@ declare global {
 }
 
 export interface RecoveryConfig {
-  profile: ProfileName;
+  profile: ProfileName | SettlementProfile;
   rpcUrl?: string;
   client?: PublicClient;
   bridgeKey?: (req: Request) => string | undefined;
@@ -46,7 +46,8 @@ export interface RecoveryConfig {
  * so the caller controls the RPC endpoint.
  */
 export function createRecoveryMiddleware(config: RecoveryConfig) {
-  const profile = PROFILES[config.profile];
+  const profile: SettlementProfile =
+    typeof config.profile === 'string' ? PROFILES[config.profile] : config.profile;
   const machine = createSettlementStateMachine();
 
   const client: PublicClient =
@@ -73,7 +74,7 @@ export function createRecoveryMiddleware(config: RecoveryConfig) {
 
     if (!txHash) {
       machine.create(settlementId, {
-        profileName: config.profile,
+        profile,
         validBefore,
       });
       machine.transition(settlementId, SettlementState.Unresolved);
@@ -81,7 +82,7 @@ export function createRecoveryMiddleware(config: RecoveryConfig) {
     }
 
     machine.create(settlementId, {
-      profileName: config.profile,
+      profile,
       txHash: txHash as `0x${string}`,
       validBefore,
     });

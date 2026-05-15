@@ -53,7 +53,7 @@ import { createSettlementStateMachine, SettlementState } from 'x402-recovery';
 const machine = createSettlementStateMachine();
 
 const record = machine.create('tx-001', {
-  profileName: 'east_africa_3g',
+  profileName: 'east_africa',
   txHash: '0xabc...',
   validBefore: Date.now() + 90_000,
 });
@@ -107,7 +107,7 @@ const app = express();
 
 app.use(
   createRecoveryMiddleware({
-    profile: 'east_africa_3g',
+    profile: 'east_africa',
     rpcUrl: process.env.BASE_RPC_URL!,
   }),
 );

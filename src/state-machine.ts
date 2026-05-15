@@ -21,6 +21,7 @@ export interface StateMachine {
     id: string,
     options?: {
       profileName?: ProfileName;
+      profile?: SettlementProfile;
       txHash?: string;
       validBefore?: number;
       payer?: string;
@@ -52,6 +53,7 @@ export function createSettlementStateMachine(options?: StateMachineOptions): Sta
       id: string,
       opts?: {
         profileName?: ProfileName;
+        profile?: SettlementProfile;
         txHash?: string;
         validBefore?: number;
         payer?: string;
@@ -65,8 +67,7 @@ export function createSettlementStateMachine(options?: StateMachineOptions): Sta
       if (records.has(id)) {
         throw new Error(`Settlement ${id} already exists`);
       }
-      const profileName = opts?.profileName ?? 'datacenter';
-      const profile = resolveProfile(profileName);
+      const profile = opts?.profile ?? resolveProfile(opts?.profileName ?? 'datacenter');
       const now = Date.now();
       const record: SettlementRecord = {
         id,
