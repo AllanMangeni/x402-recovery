@@ -32,8 +32,8 @@ For bridges linking mobile money rails to x402 settlement, idempotency keys link
 | Profile | Facilitator timeout | Poll interval | Max poll window |
 |---|---:|---:|---:|
 | datacenter | 5s | 2s | 30s |
-| east_africa_3g | 15s | 5s | 90s |
-| west_africa_3g | 15s | 5s | 90s |
+| east_africa | 15s | 5s | 90s |
+| west_africa | 15s | 5s | 90s |
 | east_africa_mpesa | 20s | 7s | 120s |
 | west_africa_momo | 20s | 7s | 120s |
 
@@ -53,7 +53,7 @@ import { createSettlementStateMachine, SettlementState } from 'x402-recovery';
 const machine = createSettlementStateMachine();
 
 const record = machine.create('tx-001', {
-  profileName: 'east_africa_3g',
+  profileName: 'east_africa',
   txHash: '0xabc...',
   validBefore: Date.now() + 90_000,
 });
@@ -107,7 +107,7 @@ const app = express();
 
 app.use(
   createRecoveryMiddleware({
-    profile: 'east_africa_3g',
+    profile: 'east_africa',
     rpcUrl: process.env.BASE_RPC_URL!,
   }),
 );
