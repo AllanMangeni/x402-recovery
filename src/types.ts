@@ -22,14 +22,14 @@ export const PROFILES = {
     pollIntervalMs: 2_000,
     maxPollWindowMs: 30_000,
   },
-  east_africa_3g: {
-    name: 'east_africa_3g',
+  east_africa: {
+    name: 'east_africa',
     facilitatorTimeoutMs: 15_000,
     pollIntervalMs: 5_000,
     maxPollWindowMs: 90_000,
   },
-  west_africa_3g: {
-    name: 'west_africa_3g',
+  west_africa: {
+    name: 'west_africa',
     facilitatorTimeoutMs: 15_000,
     pollIntervalMs: 5_000,
     maxPollWindowMs: 90_000,

@@ -164,7 +164,7 @@ The provider's observability stack receives structured log events from the `onTr
 
 ### Satellite and low-earth-orbit connectivity
 
-A maritime vessel runs an AI agent that purchases weather routing data via x402. The connection is low-earth-orbit satellite with variable latency spikes. The `east_africa_3g` profile (or a custom profile with a wider poll window) handles the longer confirmation path. The middleware's fire-and-forget poller does not block the HTTP response, so the agent's primary flow is not interrupted while recovery runs in the background.
+A maritime vessel runs an AI agent that purchases weather routing data via x402. The connection is low-earth-orbit satellite with variable latency spikes. The `east_africa` profile (or a custom profile with a wider poll window) handles the longer confirmation path. The middleware's fire-and-forget poller does not block the HTTP response, so the agent's primary flow is not interrupted while recovery runs in the background.
 
 ---
 

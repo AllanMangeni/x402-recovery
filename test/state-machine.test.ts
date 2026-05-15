@@ -23,12 +23,12 @@ describe('SettlementStateMachine', () => {
   it('creates a record with a specific environment profile', () => {
     const machine = createSettlementStateMachine();
     const record = machine.create('tx-2', {
-      profileName: 'east_africa_3g',
+      profileName: 'east_africa',
       txHash: '0xabc',
       validBefore: 1700000000,
     });
 
-    expect(record.profile.name).toBe('east_africa_3g');
+    expect(record.profile.name).toBe('east_africa');
     expect(record.txHash).toBe('0xabc');
     expect(record.validBefore).toBe(1700000000);
   });
