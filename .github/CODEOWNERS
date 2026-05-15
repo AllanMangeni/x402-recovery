@@ -1,0 +1,8 @@
+# Default: all files require review from repo owner
+* @AllanMangeni
+
+# Adapter code — high-stakes payment logic
+src/adapters/ @AllanMangeni
+
+# Workflow and CI changes
+.github/ @AllanMangeni
