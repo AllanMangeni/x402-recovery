@@ -33,7 +33,7 @@
     "dist"
   ],
   "dependencies": {
-    "viem": "^2.0.0"
+    "viem": "^2.49.2"
   },
   "peerDependencies": {
     "@beav3r/sdk": "*",
