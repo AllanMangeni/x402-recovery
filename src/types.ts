@@ -81,6 +81,11 @@ export function defineProfile(profile: {
       `defineProfile: pollIntervalMs (${profile.pollIntervalMs}) must be less than maxPollWindowMs (${profile.maxPollWindowMs})`
     );
   }
+  if (profile.facilitatorTimeoutMs >= profile.maxPollWindowMs) {
+    throw new Error(
+      `defineProfile: facilitatorTimeoutMs (${profile.facilitatorTimeoutMs}) must be less than maxPollWindowMs (${profile.maxPollWindowMs})`
+    );
+  }
   if (profile.facilitatorTimeoutMs <= 0 || profile.pollIntervalMs <= 0 || profile.maxPollWindowMs <= 0) {
     throw new Error('defineProfile: all timing values must be greater than 0');
   }

@@ -223,6 +223,17 @@ describe('SettlementStateMachine', () => {
     ).toThrow('must be less than maxPollWindowMs');
   });
 
+  it('defineProfile throws when facilitatorTimeoutMs >= maxPollWindowMs', () => {
+    expect(() =>
+      defineProfile({
+        name: 'bad',
+        facilitatorTimeoutMs: 60_000,
+        pollIntervalMs: 3_000,
+        maxPollWindowMs: 60_000,
+      }),
+    ).toThrow('must be less than maxPollWindowMs');
+  });
+
   it('defineProfile throws when any timing value is <= 0', () => {
     expect(() =>
       defineProfile({
