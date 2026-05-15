@@ -31,6 +31,8 @@ For bridges linking mobile money rails to x402 settlement, idempotency keys link
 | datacenter | 5s | 2s | 30s |
 | east_africa_3g | 15s | 5s | 90s |
 | west_africa_3g | 15s | 5s | 90s |
+| east_africa_mpesa | 20s | 7s | 120s |
+| west_africa_momo | 20s | 7s | 120s |
 
 ## Installation
 
@@ -123,6 +125,38 @@ app.listen(3000);
 
 The middleware reads `res.locals.x402Settlement` after `next()` and starts recovery internally when `timedOut === true`.
 
+### Beav3r pre-execution guard
+
+```ts
+import { guardedPayment, PROFILES } from 'x402-recovery';
+
+const result = await guardedPayment({
+  action: {
+    type: 'payout',
+    amount: '1000000',
+    recipient: '0xRecipient',
+  },
+  settlement: {
+    settlementId: 'settlement-1',
+    txHash: '0xdead...',
+    validBefore: Date.now() + 120_000,
+  },
+  profile: 'west_africa_momo',
+  beav3rAccountId: 'your-account-id',
+});
+
+console.log(result.authorized);       // true
+console.log(result.settlementState);  // SettlementState.Confirmed
+```
+
+The Beav3r adapter adds a pre-execution authorization gate before settlement polling. It loads `@beav3r/sdk` dynamically — install it as an optional dependency:
+
+```bash
+npm install @beav3r/sdk
+```
+
+Targets Base Sepolia only. Do not use on mainnet until Beav3r publishes mainnet addresses.
+
 ## Handling missing txHash
 
 Some facilitator responses may omit `txHash`. In that case, the middleware should register the settlement and mark it `unresolved` rather than polling. Recovery needs an on-chain transaction id to continue.
@@ -165,6 +199,7 @@ Use OpenTelemetry traces so facilitator responses, middleware events, and on-cha
 - Poller runs as fire-and-forget. Long poll windows should move to a job queue.
 - Middleware assumes the upstream handler sets `timedOut`.
 - `txHash` may be absent. Mark those cases `unresolved` for manual review.
+- `settlementId` is safe for in-memory deduplication within a single process. Any persistence layer must key on `canonicalKey(payer, payTo, value, nonce)` to be safe across process restarts and back-to-back executions. Once `validBefore` passes, the EIP-3009 authorization cannot be spent on-chain — records in `FailedOrphaned` state with `validBefore < Date.now()` can be safely archived without a separate TTL mechanism.
 - Horizontal scaling needs an external coordination layer.
 
 ## Project structure
@@ -176,10 +211,14 @@ src/
   poller.ts        viem-based RPC polling loop
   middleware.ts    Express middleware with timedOut trigger
   index.ts         Public API exports
+  adapters/
+    beav3r.ts      Beav3r pre-execution guard adapter
+    index.ts       Adapter re-exports
 test/
   state-machine.test.ts
   poller.test.ts
   middleware.test.ts
+  beav3r-guard.test.ts
 ```
 
 ## Related reading
