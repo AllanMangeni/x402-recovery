@@ -2,7 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { PublicClient, createPublicClient, http } from 'viem';
 import { createSettlementStateMachine } from './state-machine';
 import { pollUntilResolved } from './poller';
-import { PROFILES, EnvironmentProfile, SettlementContext } from './types';
+import { PROFILES, ProfileName, SettlementState, SettlementContext } from './types';
 
 declare global {
   namespace Express {
@@ -13,7 +13,7 @@ declare global {
 }
 
 export interface RecoveryConfig {
-  profile: EnvironmentProfile;
+  profile: ProfileName;
   rpcUrl?: string;
   client?: PublicClient;
   bridgeKey?: (req: Request) => string | undefined;
@@ -70,6 +70,16 @@ export function createRecoveryMiddleware(config: RecoveryConfig) {
     }
 
     const { settlementId, txHash, validBefore } = ctx;
+
+    if (!txHash) {
+      machine.create(settlementId, {
+        profileName: config.profile,
+        validBefore,
+      });
+      machine.transition(settlementId, SettlementState.Unresolved);
+      return;
+    }
+
     machine.create(settlementId, {
       profileName: config.profile,
       txHash: txHash as `0x${string}`,
@@ -82,8 +92,18 @@ export function createRecoveryMiddleware(config: RecoveryConfig) {
       id: settlementId,
       txHash: txHash as `0x${string}`,
       profile,
-    }).catch(() => {
-      // Silently swallow — middleware must not crash the request pipeline.
+    }).catch((err) => {
+      console.error({
+        event: 'settlement.poller.error',
+        settlementId,
+        error: String(err),
+        timestamp: Date.now(),
+      });
+      try {
+        machine.transition(settlementId, SettlementState.Unresolved);
+      } catch {
+        // record may not exist if create() failed earlier — safe to ignore
+      }
     });
   };
 }

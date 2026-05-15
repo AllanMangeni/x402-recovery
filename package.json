@@ -4,6 +4,12 @@
   "description": "TypeScript middleware for the x402 payment protocol settlement recovery, using environment profiles and an in-memory state machine.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
   "scripts": {
     "build": "tsc",
     "test": "vitest run",
@@ -30,9 +36,16 @@
     "viem": "^2.0.0"
   },
   "peerDependencies": {
+    "@beav3r/sdk": "*",
     "express": "^4.21.0"
   },
+  "peerDependenciesMeta": {
+    "@beav3r/sdk": {
+      "optional": true
+    }
+  },
   "devDependencies": {
+    "@changesets/cli": "^2.31.0",
     "@types/express": "^5.0.0",
     "@types/node": "^22.0.0",
     "express": "^4.21.0",
