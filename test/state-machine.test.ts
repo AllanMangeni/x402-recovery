@@ -180,9 +180,12 @@ describe('SettlementStateMachine', () => {
     expect(machine.get(id)!.state).toBe(SettlementState.Confirmed);
 
     const record = machine.get(id)!;
-    record.state = SettlementState.Pending;
-    machine.transition(id, SettlementState.ConfirmedLate);
-    expect(machine.get(id)!.state).toBe(SettlementState.ConfirmedLate);
+    expect(record.state).toBe(SettlementState.Confirmed);
+
+    const machine2 = createSettlementStateMachine();
+    machine2.create('tx-all-states-late');
+    machine2.transition('tx-all-states-late', SettlementState.ConfirmedLate);
+    expect(machine2.get('tx-all-states-late')!.state).toBe(SettlementState.ConfirmedLate);
 
     machine.transition(id, SettlementState.Unresolved);
     expect(machine.get(id)!.state).toBe(SettlementState.Unresolved);
