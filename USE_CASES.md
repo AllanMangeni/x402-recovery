@@ -8,11 +8,11 @@ That problem is not unique to any one market or network. Anywhere that x402 sett
 
 ## African mobile money corridors
 
-This is the original design context for the library, and the named profiles reflect it directly.
+This is the original design context for the library, and the named profiles reflect it directly. In mobile money corridors, the gap is more likely to be hit in practice because RPC latency and acknowledgement timing are less predictable. But the idempotency problem is the same one that affects any distributed payment system where facilitator state and chain state can diverge.
 
 ### M-Pesa STK push linked to x402
 
-A merchant in Nairobi runs a digital service gated behind x402 payments. The consumer's agent initiates settlement over a Base transaction. The facilitator times out after 20 seconds — within normal parameters for a 3G connection in Nairobi. The transaction eventually confirms on-chain six seconds later.
+A merchant in Nairobi runs a digital service gated behind x402 payments. The consumer's agent initiates settlement over a Base transaction. The facilitator times out after 20 seconds — the cause could be an overloaded RPC endpoint, a network partition, or a slow mobile data path. The transaction eventually confirms on-chain six seconds later.
 
 Without recovery, the merchant's backend marks the request as failed and the consumer retries, potentially paying twice. With x402-recovery using the `east_africa_mpesa` profile, the middleware registers the settlement, polls until the receipt arrives, transitions to `confirmed_late`, and allows the service to be delivered exactly once.
 
@@ -243,6 +243,28 @@ if (!settlementCtx.txHash) {
 ### Horizontal scaling
 
 The state machine is in-process only. If you run multiple instances behind a load balancer, each instance has its own state. For multi-instance deployments, back the state machine with a shared store (Redis, Postgres) and key rows on `canonicalKey`. The library intentionally does not bundle persistence so that each deployment can choose the right store for its constraints.
+
+### Custom profiles
+
+If the built-in profiles do not match your network environment, define one inline:
+
+\`\`\`ts
+import { defineProfile, createRecoveryMiddleware } from 'x402-recovery';
+
+const satelliteProfile = defineProfile({
+  name: 'satellite_leo',
+  facilitatorTimeoutMs: 30_000,
+  pollIntervalMs: 10_000,
+  maxPollWindowMs: 180_000,
+});
+
+createRecoveryMiddleware({
+  profile: satelliteProfile,
+  rpcUrl: process.env.BASE_RPC_URL!,
+});
+\`\`\`
+
+`defineProfile` validates the timing values and returns a typed `SettlementProfile`. Pass it directly anywhere a profile is accepted — `createRecoveryMiddleware`, `machine.create()`, or `pollUntilResolved`. Profile names are free-form strings used for logging and observability.
 
 ---
 
