@@ -3,6 +3,7 @@ import {
   createSettlementStateMachine,
   SettlementState,
   PROFILES,
+  canonicalKey,
 } from '../src';
 
 describe('SettlementStateMachine', () => {
@@ -145,5 +146,51 @@ describe('SettlementStateMachine', () => {
 
     expect(updated.state).toBe(SettlementState.Failed);
     expect(updated.updatedAt).toBeGreaterThanOrEqual(updated.createdAt);
+  });
+
+  it('canonicalKey produces idempotent output for same four-tuple', () => {
+    const a = canonicalKey({ payer: '0xA', payTo: '0xB', value: '100', nonce: '0xN1' });
+    const b = canonicalKey({ payer: '0xA', payTo: '0xB', value: '100', nonce: '0xN1' });
+    expect(a).toBe(b);
+  });
+
+  it('canonicalKey distinguishes same nonce with different payer', () => {
+    const a = canonicalKey({ payer: '0xA', payTo: '0xB', value: '100', nonce: '0xN1' });
+    const b = canonicalKey({ payer: '0xZ', payTo: '0xB', value: '100', nonce: '0xN1' });
+    expect(a).not.toBe(b);
+  });
+
+  it('canonicalKey distinguishes same nonce with different value', () => {
+    const a = canonicalKey({ payer: '0xA', payTo: '0xB', value: '100', nonce: '0xN1' });
+    const b = canonicalKey({ payer: '0xA', payTo: '0xB', value: '200', nonce: '0xN1' });
+    expect(a).not.toBe(b);
+  });
+
+  it('can drive all seven settlement states', () => {
+    const machine = createSettlementStateMachine();
+    const id = 'tx-all-states';
+
+    machine.create(id);
+    expect(machine.get(id)!.state).toBe(SettlementState.Pending);
+
+    machine.transition(id, SettlementState.Polling);
+    expect(machine.get(id)!.state).toBe(SettlementState.Polling);
+
+    machine.transition(id, SettlementState.Confirmed);
+    expect(machine.get(id)!.state).toBe(SettlementState.Confirmed);
+
+    const record = machine.get(id)!;
+    record.state = SettlementState.Pending;
+    machine.transition(id, SettlementState.ConfirmedLate);
+    expect(machine.get(id)!.state).toBe(SettlementState.ConfirmedLate);
+
+    machine.transition(id, SettlementState.Unresolved);
+    expect(machine.get(id)!.state).toBe(SettlementState.Unresolved);
+
+    machine.transition(id, SettlementState.Failed);
+    expect(machine.get(id)!.state).toBe(SettlementState.Failed);
+
+    machine.transition(id, SettlementState.FailedOrphaned);
+    expect(machine.get(id)!.state).toBe(SettlementState.FailedOrphaned);
   });
 });

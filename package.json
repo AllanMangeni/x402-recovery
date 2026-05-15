@@ -6,12 +6,12 @@
   "types": "dist/index.d.ts",
   "exports": {
     ".": {
-      "require": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.js"
     }
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && cp src/beav3r-shim.d.ts dist/beav3r-shim.d.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "tsc --noEmit"
@@ -30,7 +30,8 @@
     "url": "https://github.com/AllanMangeni/x402-recovery.git"
   },
   "files": [
-    "dist"
+    "dist",
+    "CHANGELOG.md"
   ],
   "dependencies": {
     "viem": "^2.49.2"

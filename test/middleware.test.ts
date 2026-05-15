@@ -146,4 +146,52 @@ describe('createRecoveryMiddleware', () => {
     machineSpy.mockRestore();
     consoleSpy.mockRestore();
   });
+
+  it('isolates 50 concurrent settlements without cross-contamination', async () => {
+    const pollSpy = vi.spyOn(pollerModule, 'pollUntilResolved').mockResolvedValue(undefined);
+
+    const machine = createSettlementStateMachine();
+    vi.spyOn(stateMachineModule, 'createSettlementStateMachine').mockReturnValue(machine);
+
+    const middleware = createRecoveryMiddleware({
+      profile: 'datacenter',
+      client: fakeClient(),
+    });
+
+    const count = 50;
+    const promises = Array.from({ length: count }, (_, i) => {
+      return new Promise<void>((resolve) => {
+        const req = fakeReq();
+        const res = fakeRes({
+          locals: {
+            x402Settlement: {
+              settlementId: `tx-concurrent-${i}`,
+              txHash: `0x${String(i).padStart(64, '0')}`,
+              validBefore: 2000000000,
+              timedOut: true,
+            },
+          },
+        });
+        middleware(req, res, () => resolve());
+      });
+    });
+
+    await Promise.all(promises);
+
+    await vi.waitFor(
+      () => {
+        expect(pollSpy).toHaveBeenCalledTimes(count);
+      },
+      { timeout: 500 },
+    );
+
+    const records = machine.list();
+    expect(records.length).toBe(count);
+
+    for (let i = 0; i < count; i++) {
+      const record = machine.get(`tx-concurrent-${i}`);
+      expect(record).toBeDefined();
+      expect(record!.id).toBe(`tx-concurrent-${i}`);
+    }
+  });
 });

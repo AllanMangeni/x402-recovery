@@ -206,8 +206,10 @@ Use OpenTelemetry traces so facilitator responses, middleware events, and on-cha
 
 ```text
 src/
-  types.ts         SettlementState, SettlementProfile, PROFILES, SettlementContext
-  state-machine.ts In-memory state machine
+  types.ts         SettlementState, SettlementProfile, ProfileName, PROFILES,
+                   SettlementContext, TransitionEvent, StateMachineOptions,
+                   canonicalKey
+  state-machine.ts In-memory state machine with onTransition hook
   poller.ts        viem-based RPC polling loop
   middleware.ts    Express middleware with timedOut trigger
   index.ts         Public API exports
