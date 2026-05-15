@@ -1,5 +1,8 @@
 # x402-recovery
 
+[![npm version](https://img.shields.io/npm/v/x402-recovery)](https://www.npmjs.com/package/x402-recovery)
+[![npm downloads](https://img.shields.io/npm/dm/x402-recovery)](https://www.npmjs.com/package/x402-recovery)
+
 Settlement recovery middleware for the [x402](https://x402.org/) payment protocol, built for low-connectivity and mobile-money-adjacent markets.
 
 ## Why this exists
