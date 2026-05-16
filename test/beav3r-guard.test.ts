@@ -38,11 +38,12 @@ describe('guardedPayment', () => {
   });
 
   it('returns authorized: false when authorization is denied', async () => {
-    vi.doMock('@beav3r/sdk', () => ({
-      BeaV3rSDK: vi.fn().mockImplementation(() => ({
-        requestAuthorization: vi.fn().mockRejectedValue(new Error('Authorization rejected')),
-      })),
-    }));
+    vi.doMock('@beav3r/sdk', () => {
+      class MockBeaV3rSDK {
+        requestAuthorization = vi.fn().mockRejectedValue(new Error('Authorization rejected'));
+      }
+      return { BeaV3rSDK: MockBeaV3rSDK };
+    });
 
     const result = await guardedPayment({
       action: baseAction(),
@@ -56,11 +57,12 @@ describe('guardedPayment', () => {
   });
 
   it('returns Unresolved when txHash is missing', async () => {
-    vi.doMock('@beav3r/sdk', () => ({
-      BeaV3rSDK: vi.fn().mockImplementation(() => ({
-        requestAuthorization: vi.fn().mockResolvedValue({ sig: '0xmocksig' }),
-      })),
-    }));
+    vi.doMock('@beav3r/sdk', () => {
+      class MockBeaV3rSDK {
+        requestAuthorization = vi.fn().mockResolvedValue({ sig: '0xmocksig' });
+      }
+      return { BeaV3rSDK: MockBeaV3rSDK };
+    });
 
     const result = await guardedPayment({
       action: baseAction(),
@@ -78,11 +80,12 @@ describe('guardedPayment', () => {
   });
 
   it('returns Confirmed when poller resolves successfully', async () => {
-    vi.doMock('@beav3r/sdk', () => ({
-      BeaV3rSDK: vi.fn().mockImplementation(() => ({
-        requestAuthorization: vi.fn().mockResolvedValue({ sig: '0xmocksig' }),
-      })),
-    }));
+    vi.doMock('@beav3r/sdk', () => {
+      class MockBeaV3rSDK {
+        requestAuthorization = vi.fn().mockResolvedValue({ sig: '0xmocksig' });
+      }
+      return { BeaV3rSDK: MockBeaV3rSDK };
+    });
 
     vi.doMock('viem', () => ({
       createPublicClient: vi.fn(() => ({
@@ -107,11 +110,12 @@ describe('guardedPayment', () => {
   });
 
   it('returns Unresolved when poller throws', async () => {
-    vi.doMock('@beav3r/sdk', () => ({
-      BeaV3rSDK: vi.fn().mockImplementation(() => ({
-        requestAuthorization: vi.fn().mockResolvedValue({ sig: '0xmocksig' }),
-      })),
-    }));
+    vi.doMock('@beav3r/sdk', () => {
+      class MockBeaV3rSDK {
+        requestAuthorization = vi.fn().mockResolvedValue({ sig: '0xmocksig' });
+      }
+      return { BeaV3rSDK: MockBeaV3rSDK };
+    });
 
     vi.doMock('viem', () => ({
       createPublicClient: vi.fn(() => ({
