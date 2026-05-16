@@ -22,14 +22,14 @@ export const PROFILES = {
     pollIntervalMs: 2_000,
     maxPollWindowMs: 30_000,
   },
-  east_africa_3g: {
-    name: 'east_africa_3g',
+  east_africa: {
+    name: 'east_africa',
     facilitatorTimeoutMs: 15_000,
     pollIntervalMs: 5_000,
     maxPollWindowMs: 90_000,
   },
-  west_africa_3g: {
-    name: 'west_africa_3g',
+  west_africa: {
+    name: 'west_africa',
     facilitatorTimeoutMs: 15_000,
     pollIntervalMs: 5_000,
     maxPollWindowMs: 90_000,
@@ -68,6 +68,28 @@ export function canonicalKey(ctx: {
   nonce: string;
 }): string {
   return `${ctx.payer}:${ctx.payTo}:${ctx.value}:${ctx.nonce}`;
+}
+
+export function defineProfile(profile: {
+  name: string;
+  facilitatorTimeoutMs: number;
+  pollIntervalMs: number;
+  maxPollWindowMs: number;
+}): SettlementProfile {
+  if (profile.pollIntervalMs >= profile.maxPollWindowMs) {
+    throw new Error(
+      `defineProfile: pollIntervalMs (${profile.pollIntervalMs}) must be less than maxPollWindowMs (${profile.maxPollWindowMs})`
+    );
+  }
+  if (profile.facilitatorTimeoutMs >= profile.maxPollWindowMs) {
+    throw new Error(
+      `defineProfile: facilitatorTimeoutMs (${profile.facilitatorTimeoutMs}) must be less than maxPollWindowMs (${profile.maxPollWindowMs})`
+    );
+  }
+  if (profile.facilitatorTimeoutMs <= 0 || profile.pollIntervalMs <= 0 || profile.maxPollWindowMs <= 0) {
+    throw new Error('defineProfile: all timing values must be greater than 0');
+  }
+  return profile;
 }
 
 export interface TransitionEvent {

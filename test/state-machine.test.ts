@@ -4,6 +4,7 @@ import {
   SettlementState,
   PROFILES,
   canonicalKey,
+  defineProfile,
 } from '../src';
 
 describe('SettlementStateMachine', () => {
@@ -23,12 +24,12 @@ describe('SettlementStateMachine', () => {
   it('creates a record with a specific environment profile', () => {
     const machine = createSettlementStateMachine();
     const record = machine.create('tx-2', {
-      profileName: 'east_africa_3g',
+      profileName: 'east_africa',
       txHash: '0xabc',
       validBefore: 1700000000,
     });
 
-    expect(record.profile.name).toBe('east_africa_3g');
+    expect(record.profile.name).toBe('east_africa');
     expect(record.txHash).toBe('0xabc');
     expect(record.validBefore).toBe(1700000000);
   });
@@ -195,5 +196,69 @@ describe('SettlementStateMachine', () => {
 
     machine.transition(id, SettlementState.FailedOrphaned);
     expect(machine.get(id)!.state).toBe(SettlementState.FailedOrphaned);
+  });
+
+  it('defineProfile returns the object unchanged when valid', () => {
+    const profile = defineProfile({
+      name: 'custom_latency',
+      facilitatorTimeoutMs: 10_000,
+      pollIntervalMs: 3_000,
+      maxPollWindowMs: 60_000,
+    });
+
+    expect(profile.name).toBe('custom_latency');
+    expect(profile.facilitatorTimeoutMs).toBe(10_000);
+    expect(profile.pollIntervalMs).toBe(3_000);
+    expect(profile.maxPollWindowMs).toBe(60_000);
+  });
+
+  it('defineProfile throws when pollIntervalMs >= maxPollWindowMs', () => {
+    expect(() =>
+      defineProfile({
+        name: 'bad',
+        facilitatorTimeoutMs: 10_000,
+        pollIntervalMs: 50_000,
+        maxPollWindowMs: 50_000,
+      }),
+    ).toThrow('must be less than maxPollWindowMs');
+  });
+
+  it('defineProfile throws when facilitatorTimeoutMs >= maxPollWindowMs', () => {
+    expect(() =>
+      defineProfile({
+        name: 'bad',
+        facilitatorTimeoutMs: 60_000,
+        pollIntervalMs: 3_000,
+        maxPollWindowMs: 60_000,
+      }),
+    ).toThrow('must be less than maxPollWindowMs');
+  });
+
+  it('defineProfile throws when any timing value is <= 0', () => {
+    expect(() =>
+      defineProfile({
+        name: 'bad',
+        facilitatorTimeoutMs: 0,
+        pollIntervalMs: 3_000,
+        maxPollWindowMs: 60_000,
+      }),
+    ).toThrow('must be greater than 0');
+  });
+
+  it('machine.create accepts a direct SettlementProfile object', () => {
+    const machine = createSettlementStateMachine();
+    const record = machine.create('tx-direct-profile', {
+      profile: {
+        name: 'direct_fiber',
+        facilitatorTimeoutMs: 3_000,
+        pollIntervalMs: 1_000,
+        maxPollWindowMs: 15_000,
+      },
+      txHash: '0xprofiletest',
+    });
+
+    expect(record.profile.name).toBe('direct_fiber');
+    expect(record.txHash).toBe('0xprofiletest');
+    expect(record.state).toBe(SettlementState.Pending);
   });
 });

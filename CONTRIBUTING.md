@@ -119,6 +119,8 @@ When adding a profile:
 3. Add at least one test in `test/state-machine.test.ts` that exercises the profile name.
 4. If the profile targets a specific network or corridor (for example, a Southeast Asia mobile profile), document the latency assumptions in a comment next to the profile entry.
 
+Custom profiles can also be defined inline with `defineProfile()` and passed directly to `createRecoveryMiddleware`, `machine.create()`, or `pollUntilResolved` without adding a named entry to `PROFILES`. Named profile contributions are still welcome for well-documented corridors.
+
 ### Adding a new adapter
 
 Adapters live under `src/adapters/`. They connect x402-recovery to external payment or agent execution platforms. An adapter should:
@@ -230,7 +232,7 @@ The poller runs as a detached async task. It does not block the HTTP response. F
 
 ### Profiles, not runtime configuration
 
-Poll intervals and timeouts are not exposed as arbitrary constructor arguments. They are named profiles. This is deliberate — it forces explicit naming of the network conditions being targeted, which makes observability and debugging easier. If you need a configuration that does not fit an existing profile, add a named profile rather than threading raw numbers through.
+Poll intervals and timeouts are exposed through named profiles for observability. `defineProfile()` lets developers pass custom timing inline when a named profile would be premature, while named profiles remain the recommended path for well-documented corridors. If you need a configuration that does not fit an existing profile, either define it inline with `defineProfile()` or add a named profile contribution.
 
 ### Beav3r adapter as optional peer
 
@@ -242,7 +244,7 @@ Poll intervals and timeouts are not exposed as arbitrary constructor arguments. 
 
 These are known gaps that would make good first contributions:
 
-- **Additional corridor profiles.** Southeast Asia (Philippines GCash, Indonesia GoPay), Latin America (Brazil PIX-adjacent), and South Asia corridors would benefit from named profiles with documented latency baselines.
+- **Additional corridor profiles.** With `defineProfile`, one-off custom timing configurations do not require a named profile contribution. Named profiles are still valuable for corridors with documented latency baselines that are likely to be reused — Southeast Asia (Philippines GCash, Indonesia GoPay), Latin America (Brazil PIX-adjacent), and South Asia corridors would benefit from named profiles with documented latency baselines.
 - **Vitest coverage setup.** Add `@vitest/coverage-v8` as a dev dependency and configure a threshold in `vitest.config.ts`.
 - **Persistence adapter example.** A reference implementation showing how to back the state machine with Redis or a Postgres table, using `canonicalKey` as the row key.
 - **OpenTelemetry trace example.** A documented `onTransition` hook implementation that emits spans to an OTLP collector.

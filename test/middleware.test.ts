@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Request, Response } from 'express';
 import { PublicClient } from 'viem';
 import { createSettlementStateMachine } from '../src/state-machine';
-import { SettlementState } from '../src/types';
+import { SettlementState, SettlementProfile } from '../src/types';
 import { createRecoveryMiddleware } from '../src/middleware';
 import * as pollerModule from '../src/poller';
 import * as stateMachineModule from '../src/state-machine';
@@ -193,5 +193,48 @@ describe('createRecoveryMiddleware', () => {
       expect(record).toBeDefined();
       expect(record!.id).toBe(`tx-concurrent-${i}`);
     }
+  });
+
+  it('accepts a SettlementProfile object directly as config.profile', async () => {
+    const pollSpy = vi.spyOn(pollerModule, 'pollUntilResolved').mockResolvedValue(undefined);
+
+    const inlineProfile: SettlementProfile = {
+      name: 'inline_test',
+      facilitatorTimeoutMs: 5_000,
+      pollIntervalMs: 2_000,
+      maxPollWindowMs: 30_000,
+    };
+
+    const middleware = createRecoveryMiddleware({
+      profile: inlineProfile,
+      client: fakeClient(),
+    });
+
+    const req = fakeReq();
+    const res = fakeRes({
+      locals: {
+        x402Settlement: {
+          settlementId: 'tx-inline-profile',
+          txHash: '0xdead',
+          validBefore: 2000000000,
+          timedOut: true,
+        },
+      },
+    });
+
+    const next = vi.fn();
+    middleware(req, res, next);
+
+    expect(next).toHaveBeenCalledOnce();
+
+    await vi.waitFor(
+      () => {
+        expect(pollSpy).toHaveBeenCalledOnce();
+        const callArgs = pollSpy.mock.calls[0][0];
+        expect(callArgs.id).toBe('tx-inline-profile');
+        expect(callArgs.profile.name).toBe('inline_test');
+      },
+      { timeout: 200 },
+    );
   });
 });
