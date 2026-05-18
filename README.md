@@ -196,6 +196,50 @@ Recommended fields:
 
 Use OpenTelemetry traces so facilitator responses, middleware events, and on-chain receipts can be correlated end to end.
 
+## Reconciliation compatibility
+
+x402-recovery composes with external chain observation tools. The `canonicalKey`
+four-tuple `(payer, payTo, value, nonce)` aligns with the x402trace JSONL schema
+across all three of its event types:
+
+| x402-recovery field | x402trace event | x402trace field |
+|---|---|---|
+| `payer` | `exchange.payment` | `payload.authorization.from` |
+| `payer` | `chain.transfer` | `from` |
+| `payer` | `reconcile.result` | `pending.payer` |
+| `payTo` | `exchange.payment` | `payload.authorization.to` |
+| `payTo` | `chain.transfer` | `to` |
+| `payTo` | `reconcile.result` | `pending.payTo` |
+| `value` | `exchange.payment` | `payload.authorization.value` |
+| `value` | `chain.transfer` | `value` |
+| `value` | `reconcile.result` | `pending.value` |
+| `nonce` | `exchange.payment` | `payload.authorization.nonce` |
+| `nonce` | `chain.transfer` | `authorizationNonce` |
+| `nonce` | `reconcile.result` | `pending.nonce` |
+
+A persistence layer keyed on `canonicalKey(payer, payTo, value, nonce)` can match
+records across x402-recovery and x402trace without a secondary join.
+
+**`reconcile.result.kind` → SettlementState:**
+
+| x402trace `kind` | x402-recovery `SettlementState` |
+|---|---|
+| `settled_on_chain` | `Confirmed` or `ConfirmedLate` (check `validBefore`) |
+| `not_settled` | `FailedOrphaned` (watch window exhausted) |
+| `value_mismatch` | `FailedOrphaned` (on-chain value diverged from authorization) |
+| `recipient_mismatch` | `FailedOrphaned` (on-chain transfer paid wrong address) |
+
+**BigInt / string convention:** x402trace serializes all `uint256` fields
+(`value`, `nonce`, `blockNumber`) as strings to preserve precision across
+`JSON.parse`. `canonicalKey` expects `value` and `nonce` as strings for the
+same reason. Convert with `.toString()` before use — do not pass `BigInt`
+values directly.
+
+**Low-connectivity clients:** x402-recovery handles recovery for clients that
+can poll. For clients that cannot poll (satellite, intermittent 2G), an external
+passive chain reader such as x402trace provides the complementary observation
+layer. Both tools key on the same canonical four-tuple.
+
 ## Notes and limitations
 
 - In-memory state only.
@@ -203,6 +247,10 @@ Use OpenTelemetry traces so facilitator responses, middleware events, and on-cha
 - Middleware assumes the upstream handler sets `timedOut`.
 - `txHash` may be absent. Mark those cases `unresolved` for manual review.
 - `settlementId` is safe for in-memory deduplication within a single process. Any persistence layer must key on `canonicalKey(payer, payTo, value, nonce)` to be safe across process restarts and back-to-back executions. Once `validBefore` passes, the EIP-3009 authorization cannot be spent on-chain — records in `FailedOrphaned` state with `validBefore < Date.now()` can be safely archived without a separate TTL mechanism.
+- `value` and `nonce` in `SettlementContext` and `canonicalKey` are typed as
+  `string`. On-chain `uint256` fields must be converted with `.toString()`
+  before use. Passing `BigInt` values directly causes silent key comparison
+  failures.
 - Horizontal scaling needs an external coordination layer.
 
 ## Project structure
