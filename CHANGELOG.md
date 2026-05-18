@@ -1,5 +1,14 @@
 # x402-recovery
 
+## 0.1.2
+
+### Patch Changes
+
+- Add reconciliation compatibility section to README
+- Trim README: remove aspirational sections, rewrite notes and limitations
+- Add `vitest` to dependabot major version ignore list
+- Note `FailedOrphaned` sub-state gap as v0.2.0 milestone
+
 ## 0.1.1
 
 ### Patch Changes
