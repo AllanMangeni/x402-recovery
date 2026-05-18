@@ -7,13 +7,14 @@ Settlement recovery middleware for the [x402](https://x402.org/) payment protoco
 
 ## Why this exists
 
-x402 separates verify and settle phases to keep latency low. When the facilitator times out but the transaction later confirms on-chain, clients can see a definite failure while the chain shows success. That Two-Phase Gap causes duplicate work, manual recovery, and working capital risk in variable networks. This library closes that gap at the middleware layer without changing on-chain guarantees.
+x402 separates verify and settle phases to keep latency low. When a facilitator
+times out but the transaction later confirms on-chain, clients see a definite
+failure while the chain shows success. This library closes that gap at the
+middleware layer without changing on-chain guarantees.
 
-For bridges linking mobile money rails to x402 settlement, idempotency keys link mobile money txids to x402 nonces so either system can independently recover the settlement state after a drop.
-
-## Where this fits
-
-[Amazon Bedrock AgentCore Payments](https://aws.amazon.com/blogs/machine-learning/agents-that-transact-introducing-amazon-bedrock-agentcore-payments-built-with-coinbase-and-stripe/) covers the happy path and managed wallets in preview regions. It does not address African mobile rails or higher facilitator timeouts on 3G. [x402](https://x402.org/) makes the payment primitive portable, and x402-recovery is the recovery layer that keeps resource delivery safe when a facilitator times out and the on-chain outcome is unknown.
+For mobile-money bridges, `bridgeRef` links a mobile money txid to the x402
+nonce so either system can recover settlement state independently after a
+network drop.
 
 ## States
 
@@ -160,49 +161,12 @@ npm install @beav3r/sdk
 
 Targets Base Sepolia only. Do not use on mainnet until Beav3r publishes mainnet addresses.
 
-## Handling missing txHash
-
-Some facilitator responses may omit `txHash`. In that case, the middleware should register the settlement and mark it `unresolved` rather than polling. Recovery needs an on-chain transaction id to continue.
-
-```ts
-if (!settlementContext.txHash) {
-  machine.create(settlementContext.settlementId, {
-    profileName: profile,
-    validBefore: settlementContext.validBefore,
-  });
-  machine.transition(settlementContext.settlementId, SettlementState.Unresolved);
-  return;
-}
-```
-
-## Observability
-
-Emit structured events keyed by `settlementId`:
-
-- `settlement.registered`
-- `settlement.poll.started`
-- `settlement.poll.result`
-- `settlement.final`
-
-Recommended fields:
-- `settlementId`
-- `profile`
-- `txHash` if available
-- `validBefore`
-- `attempt`
-- `receiptStatus`
-- `blockNumber`
-- `finalState`
-
-Use OpenTelemetry traces so facilitator responses, middleware events, and on-chain receipts can be correlated end to end.
-
 ## Reconciliation compatibility
 
-x402-recovery composes with external chain observation tools. The `canonicalKey`
-four-tuple `(payer, payTo, value, nonce)` aligns with the x402trace JSONL schema
-across all three of its event types:
+The `canonicalKey` four-tuple `(payer, payTo, value, nonce)` aligns with the
+[x402trace](https://github.com/fardinvahdat/x402trace) JSONL schema:
 
-| x402-recovery field | x402trace event | x402trace field |
+| x402-recovery | x402trace event | field |
 |---|---|---|
 | `payer` | `exchange.payment` | `payload.authorization.from` |
 | `payer` | `chain.transfer` | `from` |
@@ -217,41 +181,31 @@ across all three of its event types:
 | `nonce` | `chain.transfer` | `authorizationNonce` |
 | `nonce` | `reconcile.result` | `pending.nonce` |
 
-A persistence layer keyed on `canonicalKey(payer, payTo, value, nonce)` can match
-records across x402-recovery and x402trace without a secondary join.
+`reconcile.result.kind` maps to `SettlementState` as follows:
 
-**`reconcile.result.kind` → SettlementState:**
-
-| x402trace `kind` | x402-recovery `SettlementState` |
+| kind | SettlementState |
 |---|---|
-| `settled_on_chain` | `Confirmed` or `ConfirmedLate` (check `validBefore`) |
-| `not_settled` | `FailedOrphaned` (watch window exhausted) |
-| `value_mismatch` | `FailedOrphaned` (on-chain value diverged from authorization) |
-| `recipient_mismatch` | `FailedOrphaned` (on-chain transfer paid wrong address) |
+| `settled_on_chain` | `Confirmed` or `ConfirmedLate` |
+| `not_settled` | `FailedOrphaned` |
+| `value_mismatch` | `FailedOrphaned` |
+| `recipient_mismatch` | `FailedOrphaned` |
 
-**BigInt / string convention:** x402trace serializes all `uint256` fields
-(`value`, `nonce`, `blockNumber`) as strings to preserve precision across
-`JSON.parse`. `canonicalKey` expects `value` and `nonce` as strings for the
-same reason. Convert with `.toString()` before use — do not pass `BigInt`
-values directly.
-
-**Low-connectivity clients:** x402-recovery handles recovery for clients that
-can poll. For clients that cannot poll (satellite, intermittent 2G), an external
-passive chain reader such as x402trace provides the complementary observation
-layer. Both tools key on the same canonical four-tuple.
+For clients that cannot poll (satellite, intermittent 2G), x402trace provides
+the passive observation layer. Both tools key on the same canonical four-tuple.
 
 ## Notes and limitations
 
-- In-memory state only.
-- Poller runs as fire-and-forget. Long poll windows should move to a job queue.
-- Middleware assumes the upstream handler sets `timedOut`.
-- `txHash` may be absent. Mark those cases `unresolved` for manual review.
-- `settlementId` is safe for in-memory deduplication within a single process. Any persistence layer must key on `canonicalKey(payer, payTo, value, nonce)` to be safe across process restarts and back-to-back executions. Once `validBefore` passes, the EIP-3009 authorization cannot be spent on-chain — records in `FailedOrphaned` state with `validBefore < Date.now()` can be safely archived without a separate TTL mechanism.
-- `value` and `nonce` in `SettlementContext` and `canonicalKey` are typed as
-  `string`. On-chain `uint256` fields must be converted with `.toString()`
-  before use. Passing `BigInt` values directly causes silent key comparison
-  failures.
-- Horizontal scaling needs an external coordination layer.
+- State is in-memory. Long poll windows should use a job queue.
+- `settlementId` is safe for in-process deduplication only. Persistence layers
+  must key on `canonicalKey(payer, payTo, value, nonce)`.
+- `value` and `nonce` are typed as `string`. Convert on-chain `uint256` fields
+  with `.toString()` before use — `BigInt` values cause silent key mismatches.
+- Records in `FailedOrphaned` with `validBefore < Date.now()` can be archived
+  without a separate TTL. The EIP-3009 authorisation cannot be spent past
+  `validBefore`.
+- Horizontal scaling requires external coordination.
+- `txHash` may be absent from facilitator responses. The middleware marks those
+  records `Unresolved`.
 
 ## Project structure
 
