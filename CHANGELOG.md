@@ -9,6 +9,12 @@
 - Accept `SettlementProfile` objects in `RecoveryConfig.profile` and `machine.create()`
 - Add `facilitatorTimeoutMs < maxPollWindowMs` validation guard to `defineProfile`
 
+### Known gaps
+
+- `FailedOrphaned` has no sub-states. The x402trace reconciliation schema
+  distinguishes `value_mismatch`, `recipient_mismatch`, and `not_settled` at
+  this level. Sub-states are tracked as a v0.2.0 milestone.
+
 ## 0.1.0
 
 ### Patch Changes
