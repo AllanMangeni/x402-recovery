@@ -3,46 +3,116 @@
 [![npm version](https://img.shields.io/npm/v/x402-recovery)](https://www.npmjs.com/package/x402-recovery)
 [![npm downloads](https://img.shields.io/npm/dm/x402-recovery)](https://www.npmjs.com/package/x402-recovery)
 
-Settlement recovery middleware for the [x402](https://x402.org/) payment protocol, built for low-connectivity and mobile-money-adjacent markets.
+Late settlement recovery for x402 facilitator timeouts.
 
-## Why this exists
+## What this solves
 
 x402 separates verify and settle phases to keep latency low. When a facilitator
-times out but the transaction later confirms on-chain, clients see a definite
-failure while the chain shows success. This library closes that gap at the
-middleware layer without changing on-chain guarantees.
+times out or reports an uncertain failure, but the chain later confirms success,
+clients see a definite failure while the chain shows success.
 
-For mobile-money bridges, `bridgeRef` links a mobile money txid to the x402
-nonce so either system can recover settlement state independently after a
-network drop.
+x402-recovery tracks that gap safely — the facilitator says timeout, the chain
+may later say success, and this package closes the loop.
+
+## What this does NOT solve
+
+This is not:
+
+- A full settlement indexer
+- A facilitator dedup cache
+- A queue system or job framework
+- A database persistence layer
+- A replacement for upstream x402 settlement verification
 
 ## States
 
 | State | Meaning |
 |---|---|
-| pending | Record created, polling not started |
-| polling | RPC polling in progress |
-| confirmed | On-chain receipt succeeded within facilitator timeout |
-| confirmed_late | On-chain receipt succeeded after facilitator timeout |
-| unresolved | Fatal RPC error; manual review needed |
-| failed | Transaction reverted or poll window expired |
-| failed_orphaned | Poll window expired after validBefore; authorization expired |
+| created | Recovery record exists, polling not yet started |
+| polling | Recovery is actively checking chain truth |
+| confirmed | Chain confirmed within facilitator timeout |
+| confirmed_late | Chain confirmed after facilitator timeout |
+| unresolved | Recovery cannot safely classify the result |
+| failed | Transaction reverted or recovery window ended |
+| failed_orphaned | Recovery window ended after validBefore; authorization expired |
+
+`ConfirmedLate` is distinct from `Confirmed`. That distinction is the key
+product value — it tells you the settlement succeeded, but later than expected.
 
 ## Environment profiles
 
-| Profile | Facilitator timeout | Poll interval | Max poll window |
-|---|---:|---:|---:|
-| datacenter | 5s | 2s | 30s |
-| east_africa | 15s | 5s | 90s |
-| west_africa | 15s | 5s | 90s |
-| east_africa_mpesa | 20s | 7s | 120s |
-| west_africa_momo | 20s | 7s | 120s |
+| Profile | Facilitator timeout | Poll interval | Max poll window | Confirmations |
+|---|---:|---:|---:|---:|
+| datacenter | 5s | 2s | 30s | 1 |
+| emerging_markets | 15s | 5s | 90s | 1 |
+
+Custom profiles are created with `defineProfile`:
+
+```ts
+import { defineProfile } from 'x402-recovery';
+
+const mobileMoneyProfile = defineProfile({
+  name: 'mobile_money',
+  facilitatorTimeoutMs: 20_000,
+  pollIntervalMs: 7_000,
+  maxPollWindowMs: 120_000,
+  requiredConfirmations: 1,
+});
+```
 
 ## Installation
 
 ```bash
 npm install x402-recovery
 ```
+
+## `validBefore` unit convention
+
+`validBefore` is stored internally as Unix milliseconds.
+
+If your upstream value is EIP-3009 Unix seconds, convert it before passing to
+x402-recovery:
+
+```ts
+import { normalizeValidBefore } from 'x402-recovery';
+
+const validBeforeMs = normalizeValidBefore(contractValidBefore);
+```
+
+Never compare `Date.now()` directly against a seconds-based timestamp. The
+`normalizeValidBefore` helper detects the unit and normalizes accordingly.
+
+## Settlement identity
+
+Two identity layers:
+
+### `settlementId`
+
+Local record ID. Useful for in-process state lookup, logs, and job IDs.
+
+### `canonicalKey(payer, payTo, value, nonce)`
+
+Durable payment identity. Required for persistent stores, retries, dispatcher
+jobs, and idempotency.
+
+```ts
+import { canonicalKey } from 'x402-recovery';
+
+const key = canonicalKey({
+  payer: '0xSender',
+  payTo: '0xRecipient',
+  value: '1000000000000000000',  // 1 ETH as decimal string
+  nonce: '42',
+});
+// => "0xSender:0xRecipient:1000000000000000000:42"
+```
+
+Rules:
+
+- Persistent stores must key records by `canonicalKey`
+- Dispatcher jobs must include `canonicalKey`
+- Middleware must not rely on `settlementId` alone for deduplication
+- `value` and `nonce` are strings by design — convert uint256 values upstream
 
 ## Usage
 
@@ -54,12 +124,12 @@ import { createSettlementStateMachine, SettlementState } from 'x402-recovery';
 const machine = createSettlementStateMachine();
 
 const record = machine.create('tx-001', {
-  profileName: 'east_africa',
+  profileName: 'emerging_markets',
   txHash: '0xabc...',
   validBefore: Date.now() + 90_000,
 });
 
-console.log(record.state); // SettlementState.Pending
+console.log(record.state); // SettlementState.Created
 
 machine.transition('tx-001', SettlementState.Confirmed);
 ```
@@ -69,15 +139,19 @@ machine.transition('tx-001', SettlementState.Confirmed);
 ```ts
 import { createPublicClient, http } from 'viem';
 import { baseSepolia } from 'viem/chains';
-import { pollUntilResolved, createSettlementStateMachine, PROFILES } from 'x402-recovery';
-
-const rpcUrl = process.env.BASE_RPC_URL || 'https://sepolia.base.org';
+import {
+  pollUntilResolved,
+  createSettlementStateMachine,
+  createViemReceiptProvider,
+  PROFILES,
+} from 'x402-recovery';
 
 const client = createPublicClient({
   chain: baseSepolia,
-  transport: http(rpcUrl),
+  transport: http(process.env.BASE_RPC_URL),
 });
 
+const receiptProvider = createViemReceiptProvider(client);
 const machine = createSettlementStateMachine();
 
 machine.create('settlement-1', {
@@ -86,16 +160,15 @@ machine.create('settlement-1', {
   validBefore: Date.now() + 30_000,
 });
 
-await pollUntilResolved({
-  client,
+const result = await pollUntilResolved({
   machine,
+  receiptProvider,
   id: 'settlement-1',
   txHash: '0xdead...',
   profile: PROFILES.datacenter,
 });
 
-const record = machine.get('settlement-1');
-console.log(record?.state);
+console.log(result.state);
 ```
 
 ### Express middleware
@@ -108,7 +181,7 @@ const app = express();
 
 app.use(
   createRecoveryMiddleware({
-    profile: 'east_africa',
+    profile: 'emerging_markets',
     rpcUrl: process.env.BASE_RPC_URL!,
   }),
 );
@@ -127,7 +200,62 @@ app.get('/pay', (req, res) => {
 app.listen(3000);
 ```
 
-The middleware reads `res.locals.x402Settlement` after `next()` and starts recovery internally when `timedOut === true`.
+### Custom ReceiptProvider
+
+```ts
+import type { ReceiptProvider } from 'x402-recovery';
+
+function createWsReceiptProvider(wsUrl: string): ReceiptProvider {
+  return {
+    async getTransactionReceipt({ txHash }) {
+      const resp = await fetch(`${wsUrl}/tx/${txHash}`);
+      if (!resp.ok) return null;
+      const data = await resp.json();
+      return {
+        status: data.status === 1 ? 'success' : data.status === 0 ? 'reverted' : 'unknown',
+        blockNumber: BigInt(data.blockNumber),
+        confirmations: data.confirmations,
+      };
+    },
+  };
+}
+```
+
+### Custom PollDispatcher
+
+```ts
+import type { PollDispatcher } from 'x402-recovery';
+
+const dispatcher: PollDispatcher = {
+  dispatchPoll(input) {
+    // Enqueue to your own job queue, database, or message broker
+    settlementQueue.add('recovery', input);
+  },
+};
+
+const middleware = createRecoveryMiddleware({
+  profile: 'datacenter',
+  rpcUrl: process.env.BASE_RPC_URL,
+  stateMachine: sharedStateMachine,
+  pollDispatcher: dispatcher,
+});
+```
+
+Dispatcher mode requires a shared `stateMachine`. An error is thrown at
+middleware creation if `pollDispatcher` is provided without `stateMachine`.
+
+### Custom StateMachine
+
+```ts
+import type { StateMachine, SettlementRecord } from 'x402-recovery';
+
+class RedisStateMachine implements StateMachine {
+  async create(id: string, opts?) { /* persist to Redis */ }
+  async get(id: string) { /* read from Redis */ }
+  async transition(id: string, newState: SettlementState) { /* persist in Redis */ }
+  async list() { /* scan Redis */ }
+}
+```
 
 ### Beav3r pre-execution guard
 
@@ -145,7 +273,7 @@ const result = await guardedPayment({
     txHash: '0xdead...',
     validBefore: Date.now() + 120_000,
   },
-  profile: 'west_africa_momo',
+  profile: 'emerging_markets',
   beav3rAccountId: 'your-account-id',
 });
 
@@ -153,13 +281,12 @@ console.log(result.authorized);       // true
 console.log(result.settlementState);  // SettlementState.Confirmed
 ```
 
-The Beav3r adapter adds a pre-execution authorization gate before settlement polling. It loads `@beav3r/sdk` dynamically — install it as an optional dependency:
+The Beav3r adapter targets Base Sepolia only. Install it as an optional
+dependency:
 
 ```bash
 npm install @beav3r/sdk
 ```
-
-Targets Base Sepolia only. Do not use on mainnet until Beav3r publishes mainnet addresses.
 
 ## Reconciliation compatibility
 
@@ -190,35 +317,49 @@ The `canonicalKey` four-tuple `(payer, payTo, value, nonce)` aligns with the
 | `value_mismatch` | `FailedOrphaned` |
 | `recipient_mismatch` | `FailedOrphaned` |
 
-For clients that cannot poll (satellite, intermittent 2G), x402trace provides
-the passive observation layer. Both tools key on the same canonical four-tuple.
+## Production limitations
 
-## Notes and limitations
+The default state machine is in-memory and per-process. It is not durable.
 
-- State is in-memory. Long poll windows should use a job queue.
-- `settlementId` is safe for in-process deduplication only. Persistence layers
-  must key on `canonicalKey(payer, payTo, value, nonce)`.
-- `value` and `nonce` are typed as `string`. Convert on-chain `uint256` fields
-  with `.toString()` before use — `BigInt` values cause silent key mismatches.
-- Records in `FailedOrphaned` with `validBefore < Date.now()` can be archived
-  without a separate TTL. The EIP-3009 authorisation cannot be spent past
-  `validBefore`.
-- Horizontal scaling requires external coordination.
-- `txHash` may be absent from facilitator responses. The middleware marks those
-  records `Unresolved`.
+If the process restarts, in-flight polling is lost.
+
+For production reliability, provide a persistent `StateMachine` implementation.
+
+For horizontal scaling, all web workers and poll workers must share the same
+`StateMachine`.
+
+Dispatcher mode requires shared state. The package does not provide a queue.
+
+x402-recovery treats `validBefore` as the recovery TTL.
+
+By default, confirmation behavior depends on `requiredConfirmations`, which
+defaults to 1.
+
+A successful receipt with 1 confirmation may be too weak for high-value
+transfers. Increase `requiredConfirmations` for those flows.
+
+If the facilitator response has no `txHash`, x402-recovery records the
+settlement as `Unresolved` and does not poll.
+
+`value` and `nonce` are strings by design. Convert on-chain uint256 values to
+strings upstream.
+
+`canonicalKey(payer, payTo, value, nonce)` is the durable identity for retries
+and persistence.
 
 ## Project structure
 
 ```text
 src/
   types.ts         SettlementState, SettlementProfile, ProfileName, PROFILES,
-                   SettlementContext, TransitionEvent, StateMachineOptions,
-                   canonicalKey
-  state-machine.ts In-memory state machine with onTransition hook
-  poller.ts        viem-based RPC polling loop
-  middleware.ts    Express middleware with timedOut trigger
+                   canonicalKey, defineProfile, normalizeValidBefore,
+                   ReceiptProvider, SettlementReceipt
+  state-machine.ts In-memory state machine (async-capable interface)
+  poller.ts        ReceiptProvider-based polling loop
+  middleware.ts    Express middleware with dispatcher support
   index.ts         Public API exports
   adapters/
+    viem.ts        Viem receipt provider adapter
     beav3r.ts      Beav3r pre-execution guard adapter
     index.ts       Adapter re-exports
 test/
@@ -228,6 +369,51 @@ test/
   beav3r-guard.test.ts
 ```
 
+## Migration from v0.1.x
+
+### Profile names changed
+
+Region-specific built-in profiles (`east_africa`, `west_africa`,
+`east_africa_mpesa`, `west_africa_momo`) have been removed from exported
+`PROFILES`.
+
+Replace with custom `defineProfile(...)` calls:
+
+```ts
+const eastAfricaMpesaLike = defineProfile({
+  name: 'east_africa_mpesa_like',
+  facilitatorTimeoutMs: 20_000,
+  pollIntervalMs: 7_000,
+  maxPollWindowMs: 120_000,
+  requiredConfirmations: 1,
+});
+```
+
+### SettlementState.Pending renamed to SettlementState.Created
+
+Update any code that references `SettlementState.Pending` to
+`SettlementState.Created`.
+
+### Poller now uses ReceiptProvider
+
+`pollUntilResolved` no longer accepts `client: PublicClient`. Pass a
+`ReceiptProvider` instead:
+
+```ts
+import { createViemReceiptProvider } from 'x402-recovery';
+const receiptProvider = createViemReceiptProvider(client);
+```
+
+### Dispatcher requires shared stateMachine
+
+If you use `pollDispatcher`, you must also provide `stateMachine`. An error is
+thrown at middleware creation otherwise.
+
+### validBefore unit convention
+
+`validBefore` is now normalized to Unix milliseconds internally. Use
+`normalizeValidBefore` if your values come from EIP-3009 seconds.
+
 ## Related reading
 
 - [NDSS 2026 Two-Phase Gap poster](https://www.ndss-symposium.org/wp-content/uploads/ndss26-poster-51.pdf)
@@ -236,7 +422,8 @@ test/
 
 ## Contributing
 
-Small, focused PRs are welcome. Keep changes scoped to docs, adapter examples, or tests.
+Small, focused PRs are welcome. Keep changes scoped to docs, adapter examples,
+or tests.
 
 ## License
 

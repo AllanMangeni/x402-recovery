@@ -4,3 +4,4 @@ export type {
   GuardedPaymentResult,
   GuardedPaymentAction,
 } from './beav3r';
+export { createViemReceiptProvider } from './viem';

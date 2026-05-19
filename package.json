@@ -1,7 +1,7 @@
 {
   "name": "x402-recovery",
-  "version": "0.1.2",
-  "description": "TypeScript middleware for the x402 payment protocol settlement recovery, using environment profiles and an in-memory state machine.",
+  "version": "0.2.0",
+  "description": "Late settlement recovery for x402 facilitator timeouts.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {

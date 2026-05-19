@@ -96,6 +96,7 @@ describe('guardedPayment', () => {
 
     vi.spyOn(pollerModule, 'pollUntilResolved').mockImplementation(async ({ machine, id }) => {
       machine.transition(id, SettlementState.Confirmed);
+      return { id, state: SettlementState.Confirmed };
     });
 
     const result = await guardedPayment({
@@ -124,7 +125,7 @@ describe('guardedPayment', () => {
       http: vi.fn(() => ({})),
     }));
 
-    vi.spyOn(pollerModule, 'pollUntilResolved').mockImplementation(async ({ machine, id }) => {
+    vi.spyOn(pollerModule, 'pollUntilResolved').mockImplementation(async () => {
       throw new Error('RPC down');
     });
 
