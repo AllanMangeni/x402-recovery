@@ -16,25 +16,35 @@ export interface SettlementRecord {
   bridgeRef?: string;
 }
 
+export interface CreateSettlementOptions {
+  profileName?: ProfileName;
+  profile?: SettlementProfile;
+  txHash?: string;
+  validBefore?: number;
+  payer?: string;
+  payTo?: string;
+  value?: string;
+  nonce?: string;
+  simulationId?: string;
+  bridgeRef?: string;
+}
+
 export interface StateMachine {
   create(
     id: string,
-    options?: {
-      profileName?: ProfileName;
-      profile?: SettlementProfile;
-      txHash?: string;
-      validBefore?: number;
-      payer?: string;
-      payTo?: string;
-      value?: string;
-      nonce?: string;
-      simulationId?: string;
-      bridgeRef?: string;
-    },
-  ): SettlementRecord;
-  get(id: string): SettlementRecord | undefined;
-  transition(id: string, newState: SettlementState): SettlementRecord;
-  list(): SettlementRecord[];
+    opts?: CreateSettlementOptions,
+  ): SettlementRecord | Promise<SettlementRecord>;
+
+  get(
+    id: string,
+  ): SettlementRecord | undefined | Promise<SettlementRecord | undefined>;
+
+  transition(
+    id: string,
+    newState: SettlementState,
+  ): SettlementRecord | Promise<SettlementRecord>;
+
+  list(): SettlementRecord[] | Promise<SettlementRecord[]>;
 }
 
 export function createSettlementStateMachine(options?: StateMachineOptions): StateMachine {
@@ -48,21 +58,28 @@ export function createSettlementStateMachine(options?: StateMachineOptions): Sta
     return profile;
   }
 
+  function safeEmit(event: {
+    settlementId: string;
+    from: SettlementState;
+    to: SettlementState;
+    timestamp: number;
+    txHash?: string;
+    payer?: string;
+    payTo?: string;
+    value?: string;
+    nonce?: string;
+  }): void {
+    if (!options?.onTransition) return;
+
+    try {
+      Promise.resolve(options.onTransition(event)).catch(() => {});
+    } catch {}
+  }
+
   return {
     create(
       id: string,
-      opts?: {
-        profileName?: ProfileName;
-        profile?: SettlementProfile;
-        txHash?: string;
-        validBefore?: number;
-        payer?: string;
-        payTo?: string;
-        value?: string;
-        nonce?: string;
-        simulationId?: string;
-        bridgeRef?: string;
-      },
+      opts?: CreateSettlementOptions,
     ): SettlementRecord {
       if (records.has(id)) {
         throw new Error(`Settlement ${id} already exists`);
@@ -71,7 +88,7 @@ export function createSettlementStateMachine(options?: StateMachineOptions): Sta
       const now = Date.now();
       const record: SettlementRecord = {
         id,
-        state: SettlementState.Pending,
+        state: SettlementState.Created,
         profile,
         txHash: opts?.txHash,
         validBefore: opts?.validBefore,
@@ -101,23 +118,19 @@ export function createSettlementStateMachine(options?: StateMachineOptions): Sta
       record.state = newState;
       record.updatedAt = Date.now();
       records.set(id, record);
-      if (options?.onTransition) {
-        try {
-          options.onTransition({
-            settlementId: id,
-            from: fromState,
-            to: newState,
-            timestamp: record.updatedAt,
-            txHash: record.txHash,
-            payer: record.payer,
-            payTo: record.payTo,
-            value: record.value,
-            nonce: record.nonce,
-          });
-        } catch {
-          // callback errors must never break the state machine
-        }
-      }
+
+      safeEmit({
+        settlementId: id,
+        from: fromState,
+        to: newState,
+        timestamp: record.updatedAt,
+        txHash: record.txHash,
+        payer: record.payer,
+        payTo: record.payTo,
+        value: record.value,
+        nonce: record.nonce,
+      });
+
       return record;
     },
 

@@ -1,5 +1,5 @@
 export enum SettlementState {
-  Pending = 'pending',
+  Created = 'created',
   Confirmed = 'confirmed',
   Unresolved = 'unresolved',
   Polling = 'polling',
@@ -8,73 +8,48 @@ export enum SettlementState {
   FailedOrphaned = 'failed_orphaned',
 }
 
+export const TERMINAL_STATES: ReadonlySet<SettlementState> = new Set([
+  SettlementState.Confirmed,
+  SettlementState.ConfirmedLate,
+  SettlementState.Failed,
+  SettlementState.FailedOrphaned,
+  SettlementState.Unresolved,
+]);
+
 export interface SettlementProfile {
   name: string;
   facilitatorTimeoutMs: number;
   pollIntervalMs: number;
   maxPollWindowMs: number;
+  requiredConfirmations?: number;
 }
 
 export const PROFILES = {
-  datacenter: {
+  datacenter: defineProfile({
     name: 'datacenter',
     facilitatorTimeoutMs: 5_000,
     pollIntervalMs: 2_000,
     maxPollWindowMs: 30_000,
-  },
-  east_africa: {
-    name: 'east_africa',
+    requiredConfirmations: 1,
+  }),
+
+  emerging_markets: defineProfile({
+    name: 'emerging_markets',
     facilitatorTimeoutMs: 15_000,
     pollIntervalMs: 5_000,
     maxPollWindowMs: 90_000,
-  },
-  west_africa: {
-    name: 'west_africa',
-    facilitatorTimeoutMs: 15_000,
-    pollIntervalMs: 5_000,
-    maxPollWindowMs: 90_000,
-  },
-  east_africa_mpesa: {
-    name: 'east_africa_mpesa',
-    facilitatorTimeoutMs: 20_000,
-    pollIntervalMs: 7_000,
-    maxPollWindowMs: 120_000,
-  },
-  west_africa_momo: {
-    name: 'west_africa_momo',
-    facilitatorTimeoutMs: 20_000,
-    pollIntervalMs: 7_000,
-    maxPollWindowMs: 120_000,
-  },
-};
+    requiredConfirmations: 1,
+  }),
+} as const;
 
-export interface SettlementContext {
-  settlementId: string;
-  simulationId?: string;
-  txHash?: string;
-  validBefore?: number;
-  timedOut: boolean;
-  bridgeRef?: string;
-  payer?: string;
-  payTo?: string;
-  value?: string;
-  nonce?: string;
-}
-
-export function canonicalKey(ctx: {
-  payer: string;
-  payTo: string;
-  value: string;
-  nonce: string;
-}): string {
-  return `${ctx.payer}:${ctx.payTo}:${ctx.value}:${ctx.nonce}`;
-}
+export type ProfileName = keyof typeof PROFILES;
 
 export function defineProfile(profile: {
   name: string;
   facilitatorTimeoutMs: number;
   pollIntervalMs: number;
   maxPollWindowMs: number;
+  requiredConfirmations?: number;
 }): SettlementProfile {
   if (profile.pollIntervalMs >= profile.maxPollWindowMs) {
     throw new Error(
@@ -89,7 +64,48 @@ export function defineProfile(profile: {
   if (profile.facilitatorTimeoutMs <= 0 || profile.pollIntervalMs <= 0 || profile.maxPollWindowMs <= 0) {
     throw new Error('defineProfile: all timing values must be greater than 0');
   }
+  if (profile.requiredConfirmations !== undefined && (!Number.isInteger(profile.requiredConfirmations) || profile.requiredConfirmations <= 0)) {
+    throw new Error('defineProfile: requiredConfirmations must be greater than 0');
+  }
   return profile;
+}
+
+export interface SettlementContext {
+  settlementId: string;
+  simulationId?: string;
+  txHash?: string;
+  validBefore?: number;
+  timedOut: boolean;
+  bridgeRef?: string;
+  payer?: string;
+  payTo?: string;
+  value?: string;
+  nonce?: string;
+}
+
+export function canonicalKey(input: {
+  payer: string;
+  payTo: string;
+  value: string;
+  nonce: string;
+}): string {
+  return `${input.payer.toLowerCase()}:${input.payTo.toLowerCase()}:${input.value}:${input.nonce}`;
+}
+
+export function normalizeValidBefore(input: number | bigint | string): number {
+  const asNum = typeof input === 'string' ? Number(input) : Number(input);
+  if (!Number.isFinite(asNum) || asNum <= 0) {
+    throw new Error(`normalizeValidBefore: expected positive number, received ${input}`);
+  }
+  // Heuristic: if value is under year 33658 in seconds (~1e12 ms), treat as
+  // seconds and convert to milliseconds. Values above this threshold are
+  // assumed to already be in milliseconds.
+  //   seconds range (2020s):   ~1.7e9  → converted
+  //   milliseconds range:       ~1.7e12 → left as-is
+  if (asNum < 1_000_000_000_000) {
+    return asNum * 1000;
+  }
+  return asNum;
 }
 
 export interface TransitionEvent {
@@ -108,4 +124,14 @@ export interface StateMachineOptions {
   onTransition?: (event: TransitionEvent) => void;
 }
 
-export type ProfileName = keyof typeof PROFILES;
+export interface ReceiptProvider {
+  getTransactionReceipt(input: {
+    txHash: `0x${string}`;
+  }): Promise<SettlementReceipt | null>;
+}
+
+export interface SettlementReceipt {
+  status: 'success' | 'reverted' | 'unknown';
+  blockNumber?: bigint;
+  confirmations?: number;
+}

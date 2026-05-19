@@ -1,8 +1,9 @@
 import { Request, Response, NextFunction } from 'express';
 import { PublicClient, createPublicClient, http } from 'viem';
-import { createSettlementStateMachine } from './state-machine';
+import { createSettlementStateMachine, StateMachine, CreateSettlementOptions, SettlementRecord } from './state-machine';
 import { pollUntilResolved } from './poller';
-import { PROFILES, ProfileName, SettlementState, SettlementProfile, SettlementContext } from './types';
+import { PROFILES, ProfileName, SettlementState, SettlementProfile, SettlementContext, ReceiptProvider, canonicalKey, normalizeValidBefore } from './types';
+import { createViemReceiptProvider } from './adapters/viem';
 
 declare global {
   namespace Express {
@@ -12,57 +13,79 @@ declare global {
   }
 }
 
+const IRREVERSIBLE_STATES: ReadonlySet<SettlementState> = new Set([
+  SettlementState.Confirmed,
+  SettlementState.ConfirmedLate,
+  SettlementState.Failed,
+  SettlementState.FailedOrphaned,
+]);
+
+
+export interface PollDispatcher {
+  dispatchPoll(input: {
+    settlementId: string;
+    canonicalKey?: string;
+    txHash: `0x${string}`;
+    profile: SettlementProfile;
+    validBefore?: number;
+  }): void | Promise<void>;
+}
+
 export interface RecoveryConfig {
   profile: ProfileName | SettlementProfile;
   rpcUrl?: string;
   client?: PublicClient;
-  bridgeKey?: (req: Request) => string | undefined;
+  receiptProvider?: ReceiptProvider;
+  stateMachine?: StateMachine;
+  pollDispatcher?: PollDispatcher;
 }
 
-/**
- * Creates an Express middleware that detects x402 facilitator-timeout responses
- * and initiates an on-chain settlement recovery poll.
- *
- * Contract:
- * - Upstream handlers MUST attach `res.locals.x402Settlement` with
- *   `settlementId`, `txHash`, `timedOut: true`, and optionally `validBefore`.
- * - The middleware reads `res.locals.x402Settlement` after `next()` completes.
- * - When `timedOut` is true, the middleware registers the settlement in the
- *   in-memory state machine and calls `pollUntilResolved` as a fire-and-forget
- *   async branch (errors are swallowed to avoid double-response).
- *
- * Production TODOs:
- * - Replace in-memory machine with a persistent store.
- * - Add structured logging / telemetry for the fire-and-forget branch.
- * - Optionally use `bridgeKey` to map requests to settlement ids.
- *
- * Viem client wiring:
- * ```ts
- * import { baseSepolia } from 'viem/chains';
- * const client = createPublicClient({ chain: baseSepolia, transport: http(rpcUrl) });
- * ```
- * When `config.client` is provided (e.g. for testing), it is used directly.
- * Otherwise a client is created from `config.rpcUrl` without a hardcoded chain,
- * so the caller controls the RPC endpoint.
- */
+function logError(message: string, details: Record<string, unknown>): void {
+  console.error({
+    event: message,
+    ...details,
+    timestamp: Date.now(),
+  });
+}
+
+async function getOrCreateSettlement(
+  machine: StateMachine,
+  id: string,
+  opts: CreateSettlementOptions,
+): Promise<SettlementRecord> {
+  const existing = await machine.get(id);
+  if (existing) return existing;
+  try {
+    return await machine.create(id, opts);
+  } catch (createErr) {
+    const retried = await machine.get(id);
+    if (retried) return retried;
+    throw createErr;
+  }
+}
+
 export function createRecoveryMiddleware(config: RecoveryConfig) {
   const profile: SettlementProfile =
     typeof config.profile === 'string' ? PROFILES[config.profile] : config.profile;
-  const machine = createSettlementStateMachine();
+  const machine = config.stateMachine ?? createSettlementStateMachine();
 
-  const client: PublicClient =
-    config.client ??
-    (config.rpcUrl
-      ? createPublicClient({
-          transport: http(config.rpcUrl),
-        })
-      : (() => {
-          throw new Error(
-            'RecoveryConfig requires either rpcUrl or client',
-          );
-        })());
+  if (config.pollDispatcher && !config.stateMachine) {
+    throw new Error('RecoveryConfig: pollDispatcher requires stateMachine for shared state');
+  }
 
-  return (_req: Request, res: Response, next: NextFunction) => {
+  let receiptProvider: ReceiptProvider;
+  if (config.receiptProvider) {
+    receiptProvider = config.receiptProvider;
+  } else if (config.client) {
+    receiptProvider = createViemReceiptProvider(config.client);
+  } else if (config.rpcUrl) {
+    const client = createPublicClient({ transport: http(config.rpcUrl) });
+    receiptProvider = createViemReceiptProvider(client);
+  } else {
+    throw new Error('RecoveryConfig requires one of receiptProvider, client, or rpcUrl');
+  }
+
+  return async (req: Request, res: Response, next: NextFunction) => {
     next();
 
     const ctx = res.locals?.x402Settlement;
@@ -70,41 +93,98 @@ export function createRecoveryMiddleware(config: RecoveryConfig) {
       return;
     }
 
-    const { settlementId, txHash, validBefore } = ctx;
+    const { settlementId, txHash, payer, payTo, value, nonce } = ctx;
 
-    if (!txHash) {
-      machine.create(settlementId, {
+    let validBefore: number | undefined;
+    if (ctx.validBefore !== undefined) {
+      validBefore = normalizeValidBefore(ctx.validBefore);
+    }
+
+    let ck: string | undefined;
+    if (payer && payTo && value && nonce) {
+      ck = canonicalKey({ payer, payTo, value, nonce });
+    }
+
+    const hasTxHash = typeof txHash === 'string' && txHash.length > 0;
+
+    let record;
+    try {
+      record = await getOrCreateSettlement(machine, settlementId, {
         profile,
+        txHash: hasTxHash ? (txHash as `0x${string}`) : undefined,
         validBefore,
+        payer,
+        payTo,
+        value,
+        nonce,
       });
-      machine.transition(settlementId, SettlementState.Unresolved);
+    } catch (err) {
+      logError('settlement.create.error', {
+        settlementId,
+        error: String(err),
+      });
       return;
     }
 
-    machine.create(settlementId, {
-      profile,
-      txHash: txHash as `0x${string}`,
-      validBefore,
-    });
+    if (IRREVERSIBLE_STATES.has(record.state)) {
+      return;
+    }
+
+    if (record.state === SettlementState.Unresolved) {
+      if (!hasTxHash || record.txHash) {
+        return;
+      }
+    }
+
+    if (!hasTxHash) {
+      try {
+        await machine.transition(settlementId, SettlementState.Unresolved);
+      } catch {}
+      return;
+    }
+
+    const typedTxHash = txHash as `0x${string}`;
+
+    if (config.pollDispatcher) {
+      try {
+        const dispatchResult = config.pollDispatcher.dispatchPoll({
+          settlementId,
+          canonicalKey: ck,
+          txHash: typedTxHash,
+          profile,
+          validBefore,
+        });
+        if (dispatchResult instanceof Promise) {
+          dispatchResult.catch((err) => {
+            logError('settlement.dispatcher.error', {
+              settlementId,
+              error: String(err),
+            });
+          });
+        }
+      } catch (err) {
+        logError('settlement.dispatcher.error', {
+          settlementId,
+          error: String(err),
+        });
+      }
+      return;
+    }
 
     pollUntilResolved({
-      client,
-      machine,
       id: settlementId,
-      txHash: txHash as `0x${string}`,
+      txHash: typedTxHash,
       profile,
+      machine,
+      receiptProvider,
     }).catch((err) => {
-      console.error({
-        event: 'settlement.poller.error',
+      logError('settlement.poller.error', {
         settlementId,
         error: String(err),
-        timestamp: Date.now(),
       });
       try {
         machine.transition(settlementId, SettlementState.Unresolved);
-      } catch {
-        // record may not exist if create() failed earlier — safe to ignore
-      }
+      } catch {}
     });
   };
 }
