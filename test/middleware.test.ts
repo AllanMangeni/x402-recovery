@@ -524,6 +524,114 @@ describe('createRecoveryMiddleware', () => {
       const record = machine.get('tx-orphaned');
       expect(record!.state).toBe(SettlementState.FailedOrphaned);
     });
+
+    it('upgrades Unresolved (no txHash) to Polling when duplicate has txHash', async () => {
+      const pollSpy = vi
+        .spyOn(pollerModule, 'pollUntilResolved')
+        .mockResolvedValue({ id: 'tx-unresolved-upgrade', state: SettlementState.Confirmed });
+
+      const machine = createSettlementStateMachine();
+      machine.create('tx-unresolved-upgrade', {
+        profileName: 'datacenter',
+      });
+      machine.transition('tx-unresolved-upgrade', SettlementState.Unresolved);
+
+      const middleware = createRecoveryMiddleware({
+        profile: 'datacenter',
+        receiptProvider: fakeReceiptProvider(),
+        stateMachine: machine,
+      });
+
+      const req = fakeReq();
+      const res = fakeRes({
+        locals: {
+          x402Settlement: {
+            settlementId: 'tx-unresolved-upgrade',
+            txHash: '0xnewhash',
+            timedOut: true,
+          },
+        },
+      });
+
+      const next = vi.fn();
+      const middlewarePromise = middleware(req, res, next);
+      await middlewarePromise;
+
+      await vi.waitFor(
+        () => {
+          expect(pollSpy).toHaveBeenCalledOnce();
+        },
+        { timeout: 200 },
+      );
+    });
+
+    it('leaves Unresolved (with txHash) unchanged when duplicate has txHash', async () => {
+      const pollSpy = vi
+        .spyOn(pollerModule, 'pollUntilResolved')
+        .mockResolvedValue({ id: '', state: SettlementState.Confirmed });
+
+      const machine = createSettlementStateMachine();
+      machine.create('tx-unresolved-with-hash', {
+        profileName: 'datacenter',
+        txHash: '0xoriginal',
+      });
+      machine.transition('tx-unresolved-with-hash', SettlementState.Unresolved);
+
+      const middleware = createRecoveryMiddleware({
+        profile: 'datacenter',
+        receiptProvider: fakeReceiptProvider(),
+        stateMachine: machine,
+      });
+
+      const req = fakeReq();
+      const res = fakeRes({
+        locals: {
+          x402Settlement: {
+            settlementId: 'tx-unresolved-with-hash',
+            txHash: '0xnewhash',
+            timedOut: true,
+          },
+        },
+      });
+
+      const next = vi.fn();
+      const middlewarePromise = middleware(req, res, next);
+      await middlewarePromise;
+
+      await new Promise((r) => setTimeout(r, 50));
+      expect(pollSpy).not.toHaveBeenCalled();
+    });
+
+    it('leaves Unresolved (no txHash) unchanged when duplicate also has no txHash', async () => {
+      const machine = createSettlementStateMachine();
+      machine.create('tx-unresolved-nohash', {
+        profileName: 'datacenter',
+      });
+      machine.transition('tx-unresolved-nohash', SettlementState.Unresolved);
+
+      const middleware = createRecoveryMiddleware({
+        profile: 'datacenter',
+        receiptProvider: fakeReceiptProvider(),
+        stateMachine: machine,
+      });
+
+      const req = fakeReq();
+      const res = fakeRes({
+        locals: {
+          x402Settlement: {
+            settlementId: 'tx-unresolved-nohash',
+            timedOut: true,
+          },
+        },
+      });
+
+      const next = vi.fn();
+      const middlewarePromise = middleware(req, res, next);
+      await middlewarePromise;
+
+      const record = machine.get('tx-unresolved-nohash');
+      expect(record!.state).toBe(SettlementState.Unresolved);
+    });
   });
 
   describe('dispatcher mode', () => {

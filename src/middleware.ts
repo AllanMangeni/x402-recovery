@@ -2,7 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { PublicClient, createPublicClient, http } from 'viem';
 import { createSettlementStateMachine, StateMachine, CreateSettlementOptions, SettlementRecord } from './state-machine';
 import { pollUntilResolved } from './poller';
-import { PROFILES, ProfileName, SettlementState, SettlementProfile, SettlementContext, ReceiptProvider, canonicalKey, normalizeValidBefore, TERMINAL_STATES } from './types';
+import { PROFILES, ProfileName, SettlementState, SettlementProfile, SettlementContext, ReceiptProvider, canonicalKey, normalizeValidBefore } from './types';
 import { createViemReceiptProvider } from './adapters/viem';
 
 declare global {
@@ -12,6 +12,14 @@ declare global {
     }
   }
 }
+
+const IRREVERSIBLE_STATES: ReadonlySet<SettlementState> = new Set([
+  SettlementState.Confirmed,
+  SettlementState.ConfirmedLate,
+  SettlementState.Failed,
+  SettlementState.FailedOrphaned,
+]);
+
 
 export interface PollDispatcher {
   dispatchPoll(input: {
@@ -49,10 +57,10 @@ async function getOrCreateSettlement(
   if (existing) return existing;
   try {
     return await machine.create(id, opts);
-  } catch {
+  } catch (createErr) {
     const retried = await machine.get(id);
     if (retried) return retried;
-    throw new Error(`Settlement ${id} not found after create failure`);
+    throw createErr;
   }
 }
 
@@ -118,8 +126,14 @@ export function createRecoveryMiddleware(config: RecoveryConfig) {
       return;
     }
 
-    if (TERMINAL_STATES.has(record.state)) {
+    if (IRREVERSIBLE_STATES.has(record.state)) {
       return;
+    }
+
+    if (record.state === SettlementState.Unresolved) {
+      if (!hasTxHash || record.txHash) {
+        return;
+      }
     }
 
     if (!hasTxHash) {
