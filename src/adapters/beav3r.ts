@@ -2,6 +2,7 @@ import { SettlementState, ProfileName, PROFILES } from '../types';
 import { createSettlementStateMachine } from '../state-machine';
 import { pollUntilResolved } from '../poller';
 import { createPublicClient, http } from 'viem';
+import { createViemReceiptProvider } from './viem';
 
 /**
  * Beav3r contract addresses on Base Sepolia.
@@ -58,7 +59,6 @@ export async function guardedPayment(
 ): Promise<GuardedPaymentResult> {
   const { action, settlement, profile, beav3rAccountId } = options;
 
-  // Step 1: Load Beav3r SDK dynamically — degrades gracefully if not installed
   let BeaV3rSDK: any;
   try {
     BeaV3rSDK = (await import('@beav3r/sdk')).BeaV3rSDK;
@@ -69,7 +69,6 @@ export async function guardedPayment(
     };
   }
 
-  // Step 2: Request pre-execution authorization from Beav3r
   const beav3r = new BeaV3rSDK();
   let artifact: unknown;
 
@@ -92,7 +91,6 @@ export async function guardedPayment(
     };
   }
 
-  // Step 3: txHash absent — mark unresolved, flag for manual review
   if (!settlement.txHash) {
     return {
       authorized: true,
@@ -102,7 +100,6 @@ export async function guardedPayment(
     };
   }
 
-  // Step 4: Post-settlement recovery with Africa-aware polling
   const machine = createSettlementStateMachine();
   machine.create(settlement.settlementId, {
     profileName: profile,
@@ -114,11 +111,12 @@ export async function guardedPayment(
   const client = createPublicClient({
     transport: http(rpcUrl),
   });
+  const receiptProvider = createViemReceiptProvider(client);
 
   try {
     await pollUntilResolved({
-      client,
       machine,
+      receiptProvider,
       id: settlement.settlementId,
       txHash: settlement.txHash as `0x${string}`,
       profile: PROFILES[profile],
@@ -137,7 +135,7 @@ export async function guardedPayment(
     };
   }
 
-  const record = machine.get(settlement.settlementId);
+  const record = await machine.get(settlement.settlementId);
 
   return {
     authorized: true,

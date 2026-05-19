@@ -1,18 +1,20 @@
-import { Hash, PublicClient } from 'viem';
 import { StateMachine } from './state-machine';
-import { SettlementState, SettlementProfile } from './types';
+import { SettlementState, SettlementProfile, ReceiptProvider } from './types';
 
 export interface PollUntilResolvedParams {
-  client: PublicClient;
-  machine: StateMachine;
   id: string;
-  txHash: Hash;
+  txHash: `0x${string}`;
   profile: SettlementProfile;
+  machine: StateMachine;
+  receiptProvider: ReceiptProvider;
   now?: () => number;
+  delay?: (ms: number) => Promise<void>;
+  signal?: AbortSignal;
 }
 
-const delay = (ms: number): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, ms));
+function defaultDelay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function isTransactionNotFoundError(error: unknown): boolean {
   if (error instanceof Error) {
@@ -22,35 +24,57 @@ function isTransactionNotFoundError(error: unknown): boolean {
     if ('shortMessage' in error && typeof (error as Record<string, unknown>).shortMessage === 'string') {
       return ((error as Record<string, unknown>).shortMessage as string).includes('Transaction not found');
     }
+    const message = error.message.toLowerCase();
+    if (message.includes('not found') || message.includes('could not be found')) {
+      return true;
+    }
   }
   return false;
 }
 
-export async function pollUntilResolved(params: PollUntilResolvedParams): Promise<void> {
-  const { client, machine, id, txHash, profile, now = Date.now } = params;
+export async function pollUntilResolved(
+  params: PollUntilResolvedParams,
+): Promise<{ id: string; state: SettlementState }> {
+  const {
+    id,
+    txHash,
+    profile,
+    machine,
+    receiptProvider,
+    now = Date.now,
+    delay = defaultDelay,
+    signal,
+  } = params;
 
-  const record = machine.get(id);
+  const record = await machine.get(id);
+
   if (!record) {
     throw new Error(`Settlement ${id} not found`);
   }
 
-  machine.transition(id, SettlementState.Polling);
-
-  const deadline = now() + profile.maxPollWindowMs;
   const createdAt = record.createdAt;
 
-  while (now() < deadline) {
-    let receipt: { status: string } | null;
+  await machine.transition(id, SettlementState.Polling);
 
+  const deadline = now() + profile.maxPollWindowMs;
+  const requiredConfirmations = profile.requiredConfirmations ?? 1;
+
+  while (now() < deadline) {
+    if (signal?.aborted) {
+      await machine.transition(id, SettlementState.Unresolved);
+      return { id, state: SettlementState.Unresolved };
+    }
+
+    let receipt;
     try {
-      receipt = await client.getTransactionReceipt({ hash: txHash });
+      receipt = await receiptProvider.getTransactionReceipt({ txHash });
     } catch (error) {
       if (isTransactionNotFoundError(error)) {
         await delay(profile.pollIntervalMs);
         continue;
       }
-      machine.transition(id, SettlementState.Unresolved);
-      return;
+      await machine.transition(id, SettlementState.Unresolved);
+      return { id, state: SettlementState.Unresolved };
     }
 
     if (!receipt) {
@@ -59,25 +83,40 @@ export async function pollUntilResolved(params: PollUntilResolvedParams): Promis
     }
 
     if (receipt.status === 'success') {
-      if (now() - createdAt <= profile.facilitatorTimeoutMs) {
-        machine.transition(id, SettlementState.Confirmed);
-      } else {
-        machine.transition(id, SettlementState.ConfirmedLate);
+      const confirmations = receipt.confirmations ?? 1;
+      if (confirmations < requiredConfirmations) {
+        await delay(profile.pollIntervalMs);
+        continue;
       }
-      return;
+
+      if (now() - createdAt <= profile.facilitatorTimeoutMs) {
+        await machine.transition(id, SettlementState.Confirmed);
+        return { id, state: SettlementState.Confirmed };
+      } else {
+        await machine.transition(id, SettlementState.ConfirmedLate);
+        return { id, state: SettlementState.ConfirmedLate };
+      }
     }
 
     if (receipt.status === 'reverted') {
-      machine.transition(id, SettlementState.Failed);
-      return;
+      await machine.transition(id, SettlementState.Failed);
+      return { id, state: SettlementState.Failed };
+    }
+
+    if (receipt.status === 'unknown') {
+      await machine.transition(id, SettlementState.Unresolved);
+      return { id, state: SettlementState.Unresolved };
     }
 
     await delay(profile.pollIntervalMs);
   }
 
-  if (record.validBefore !== undefined && now() > record.validBefore) {
-    machine.transition(id, SettlementState.FailedOrphaned);
-  } else {
-    machine.transition(id, SettlementState.Failed);
+  const updatedRecord = await machine.get(id);
+  if (updatedRecord?.validBefore !== undefined && now() > updatedRecord.validBefore) {
+    await machine.transition(id, SettlementState.FailedOrphaned);
+    return { id, state: SettlementState.FailedOrphaned };
   }
+
+  await machine.transition(id, SettlementState.Failed);
+  return { id, state: SettlementState.Failed };
 }

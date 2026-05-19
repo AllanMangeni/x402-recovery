@@ -5,6 +5,8 @@ import {
   PROFILES,
   canonicalKey,
   defineProfile,
+  normalizeValidBefore,
+  StateMachine,
 } from '../src';
 
 describe('SettlementStateMachine', () => {
@@ -13,7 +15,7 @@ describe('SettlementStateMachine', () => {
     const record = machine.create('tx-1');
 
     expect(record.id).toBe('tx-1');
-    expect(record.state).toBe(SettlementState.Pending);
+    expect(record.state).toBe(SettlementState.Created);
     expect(record.profile.name).toBe('datacenter');
     expect(record.txHash).toBeUndefined();
     expect(record.validBefore).toBeUndefined();
@@ -24,14 +26,24 @@ describe('SettlementStateMachine', () => {
   it('creates a record with a specific environment profile', () => {
     const machine = createSettlementStateMachine();
     const record = machine.create('tx-2', {
-      profileName: 'east_africa',
+      profileName: 'datacenter',
       txHash: '0xabc',
-      validBefore: 1700000000,
+      validBefore: 1700000000000,
     });
 
-    expect(record.profile.name).toBe('east_africa');
+    expect(record.profile.name).toBe('datacenter');
     expect(record.txHash).toBe('0xabc');
-    expect(record.validBefore).toBe(1700000000);
+    expect(record.validBefore).toBe(1700000000000);
+  });
+
+  it('creates a record with emerging_markets profile', () => {
+    const machine = createSettlementStateMachine();
+    const record = machine.create('tx-em', { profileName: 'emerging_markets', txHash: '0xabc' });
+
+    expect(record.profile.name).toBe('emerging_markets');
+    expect(record.state).toBe(SettlementState.Created);
+    expect(record.profile.facilitatorTimeoutMs).toBe(15_000);
+    expect(record.profile.maxPollWindowMs).toBe(90_000);
   });
 
   it('transitions states correctly', () => {
@@ -60,20 +72,11 @@ describe('SettlementStateMachine', () => {
     ).toThrow('Unknown settlement profile: unknown_profile');
   });
 
-  it('creates a record with east_africa_mpesa profile', () => {
+  it('throws when transitioning a missing id', () => {
     const machine = createSettlementStateMachine();
-    const record = machine.create('tx-mpesa', { profileName: 'east_africa_mpesa', txHash: '0xabc' });
-
-    expect(record.profile.name).toBe('east_africa_mpesa');
-    expect(record.state).toBe(SettlementState.Pending);
-  });
-
-  it('creates a record with west_africa_momo profile', () => {
-    const machine = createSettlementStateMachine();
-    const record = machine.create('tx-momo', { profileName: 'west_africa_momo', txHash: '0xdef' });
-
-    expect(record.profile.name).toBe('west_africa_momo');
-    expect(record.state).toBe(SettlementState.Pending);
+    expect(() => machine.transition('nonexistent', SettlementState.Confirmed)).toThrow(
+      'Settlement nonexistent not found',
+    );
   });
 
   it('calls onTransition on every state transition', () => {
@@ -97,12 +100,12 @@ describe('SettlementStateMachine', () => {
 
     const event = onTransition.mock.calls[0][0];
     expect(event.settlementId).toBe('tx-hook-2');
-    expect(event.from).toBe(SettlementState.Pending);
+    expect(event.from).toBe(SettlementState.Created);
     expect(event.to).toBe(SettlementState.Confirmed);
     expect(event.timestamp).toBeGreaterThanOrEqual(before);
   });
 
-  it('emits EIP-3009 fields in TransitionEvent when present on record', () => {
+  it('emits txHash, payer, payTo, value, nonce in TransitionEvent when present', () => {
     const onTransition = vi.fn();
     const machine = createSettlementStateMachine({ onTransition });
     machine.create('tx-hook-3', {
@@ -123,7 +126,7 @@ describe('SettlementStateMachine', () => {
     expect(event.nonce).toBe('0xnonce001');
   });
 
-  it('onTransition error does not cause machine.transition to throw', () => {
+  it('onTransition sync error does not cause transition to throw', () => {
     const onTransition = vi.fn(() => {
       throw new Error('callback explosion');
     });
@@ -139,6 +142,33 @@ describe('SettlementStateMachine', () => {
     expect(onTransition).toHaveBeenCalledOnce();
   });
 
+  it('onTransition async rejection does not cause unhandled rejection', async () => {
+    let caughtRejection = false;
+    const onUnhandled = () => {
+      caughtRejection = true;
+    };
+
+    process.on('unhandledRejection', onUnhandled);
+
+    const onTransition = vi.fn(() => {
+      return Promise.reject(new Error('async callback explosion'));
+    });
+
+    const machine = createSettlementStateMachine({ onTransition });
+    machine.create('tx-async-hook');
+
+    machine.transition('tx-async-hook', SettlementState.Polling);
+
+    const record = machine.get('tx-async-hook');
+    expect(record!.state).toBe(SettlementState.Polling);
+    expect(onTransition).toHaveBeenCalledOnce();
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    process.removeListener('unhandledRejection', onUnhandled);
+    expect(caughtRejection).toBe(false);
+  });
+
   it('works normally when no onTransition is provided', () => {
     const machine = createSettlementStateMachine();
     machine.create('tx-hook-5');
@@ -147,6 +177,22 @@ describe('SettlementStateMachine', () => {
 
     expect(updated.state).toBe(SettlementState.Failed);
     expect(updated.updatedAt).toBeGreaterThanOrEqual(updated.createdAt);
+  });
+
+  it('list returns all records', () => {
+    const machine = createSettlementStateMachine();
+    machine.create('a');
+    machine.create('b');
+    machine.create('c');
+
+    const records = machine.list();
+    expect(records).toHaveLength(3);
+    expect(records.map((r) => r.id).sort()).toEqual(['a', 'b', 'c']);
+  });
+
+  it('get returns undefined for unknown id', () => {
+    const machine = createSettlementStateMachine();
+    expect(machine.get('nonexistent')).toBeUndefined();
   });
 
   it('canonicalKey produces idempotent output for same four-tuple', () => {
@@ -172,7 +218,7 @@ describe('SettlementStateMachine', () => {
     const id = 'tx-all-states';
 
     machine.create(id);
-    expect(machine.get(id)!.state).toBe(SettlementState.Pending);
+    expect(machine.get(id)!.state).toBe(SettlementState.Created);
 
     machine.transition(id, SettlementState.Polling);
     expect(machine.get(id)!.state).toBe(SettlementState.Polling);
@@ -180,13 +226,8 @@ describe('SettlementStateMachine', () => {
     machine.transition(id, SettlementState.Confirmed);
     expect(machine.get(id)!.state).toBe(SettlementState.Confirmed);
 
-    const record = machine.get(id)!;
-    expect(record.state).toBe(SettlementState.Confirmed);
-
-    const machine2 = createSettlementStateMachine();
-    machine2.create('tx-all-states-late');
-    machine2.transition('tx-all-states-late', SettlementState.ConfirmedLate);
-    expect(machine2.get('tx-all-states-late')!.state).toBe(SettlementState.ConfirmedLate);
+    machine.transition(id, SettlementState.ConfirmedLate);
+    expect(machine.get(id)!.state).toBe(SettlementState.ConfirmedLate);
 
     machine.transition(id, SettlementState.Unresolved);
     expect(machine.get(id)!.state).toBe(SettlementState.Unresolved);
@@ -198,7 +239,32 @@ describe('SettlementStateMachine', () => {
     expect(machine.get(id)!.state).toBe(SettlementState.FailedOrphaned);
   });
 
-  it('defineProfile returns the object unchanged when valid', () => {
+  it('async StateMachine adapter works', async () => {
+    const syncMachine = createSettlementStateMachine();
+
+    const asyncMachine: StateMachine = {
+      create: (id, opts) => syncMachine.create(id, opts),
+      get: (id) => syncMachine.get(id),
+      transition: (id, state) => syncMachine.transition(id, state),
+      list: () => syncMachine.list(),
+    };
+
+    const record = await asyncMachine.create('async-1', { profileName: 'datacenter' });
+    expect(record.state).toBe(SettlementState.Created);
+
+    const got = await asyncMachine.get('async-1');
+    expect(got?.id).toBe('async-1');
+
+    const transitioned = await asyncMachine.transition('async-1', SettlementState.Confirmed);
+    expect(transitioned.state).toBe(SettlementState.Confirmed);
+
+    const list = await asyncMachine.list();
+    expect(list).toHaveLength(1);
+  });
+});
+
+describe('defineProfile', () => {
+  it('returns the object unchanged when valid', () => {
     const profile = defineProfile({
       name: 'custom_latency',
       facilitatorTimeoutMs: 10_000,
@@ -212,7 +278,31 @@ describe('SettlementStateMachine', () => {
     expect(profile.maxPollWindowMs).toBe(60_000);
   });
 
-  it('defineProfile throws when pollIntervalMs >= maxPollWindowMs', () => {
+  it('validates requiredConfirmations > 0', () => {
+    expect(() =>
+      defineProfile({
+        name: 'bad',
+        facilitatorTimeoutMs: 10_000,
+        pollIntervalMs: 3_000,
+        maxPollWindowMs: 60_000,
+        requiredConfirmations: 0,
+      }),
+    ).toThrow('must be greater than 0');
+  });
+
+  it('accepts valid requiredConfirmations', () => {
+    const profile = defineProfile({
+      name: 'high_confirm',
+      facilitatorTimeoutMs: 10_000,
+      pollIntervalMs: 3_000,
+      maxPollWindowMs: 60_000,
+      requiredConfirmations: 5,
+    });
+
+    expect(profile.requiredConfirmations).toBe(5);
+  });
+
+  it('throws when pollIntervalMs >= maxPollWindowMs', () => {
     expect(() =>
       defineProfile({
         name: 'bad',
@@ -223,7 +313,7 @@ describe('SettlementStateMachine', () => {
     ).toThrow('must be less than maxPollWindowMs');
   });
 
-  it('defineProfile throws when facilitatorTimeoutMs >= maxPollWindowMs', () => {
+  it('throws when facilitatorTimeoutMs >= maxPollWindowMs', () => {
     expect(() =>
       defineProfile({
         name: 'bad',
@@ -234,7 +324,7 @@ describe('SettlementStateMachine', () => {
     ).toThrow('must be less than maxPollWindowMs');
   });
 
-  it('defineProfile throws when any timing value is <= 0', () => {
+  it('throws when any timing value is <= 0', () => {
     expect(() =>
       defineProfile({
         name: 'bad',
@@ -259,6 +349,51 @@ describe('SettlementStateMachine', () => {
 
     expect(record.profile.name).toBe('direct_fiber');
     expect(record.txHash).toBe('0xprofiletest');
-    expect(record.state).toBe(SettlementState.Pending);
+    expect(record.state).toBe(SettlementState.Created);
+  });
+});
+
+describe('PROFILES', () => {
+  it('has datacenter built-in', () => {
+    expect(PROFILES.datacenter).toBeDefined();
+    expect(PROFILES.datacenter.facilitatorTimeoutMs).toBe(5_000);
+    expect(PROFILES.datacenter.requiredConfirmations).toBe(1);
+  });
+
+  it('has emerging_markets built-in', () => {
+    expect(PROFILES.emerging_markets).toBeDefined();
+    expect(PROFILES.emerging_markets.facilitatorTimeoutMs).toBe(15_000);
+    expect(PROFILES.emerging_markets.maxPollWindowMs).toBe(90_000);
+    expect(PROFILES.emerging_markets.requiredConfirmations).toBe(1);
+  });
+
+  it('does not have removed region-specific profiles', () => {
+    expect((PROFILES as Record<string, unknown>).east_africa).toBeUndefined();
+    expect((PROFILES as Record<string, unknown>).west_africa).toBeUndefined();
+    expect((PROFILES as Record<string, unknown>).east_africa_mpesa).toBeUndefined();
+    expect((PROFILES as Record<string, unknown>).west_africa_momo).toBeUndefined();
+  });
+});
+
+describe('normalizeValidBefore', () => {
+  it('converts seconds to milliseconds', () => {
+    expect(normalizeValidBefore(1700000000)).toBe(1700000000000);
+    expect(normalizeValidBefore('1700000000')).toBe(1700000000000);
+    expect(normalizeValidBefore(BigInt(1700000000))).toBe(1700000000000);
+  });
+
+  it('leaves milliseconds as-is', () => {
+    expect(normalizeValidBefore(1700000000000)).toBe(1700000000000);
+    expect(normalizeValidBefore('1700000000000')).toBe(1700000000000);
+    expect(normalizeValidBefore(BigInt(1700000000000))).toBe(1700000000000);
+  });
+
+  it('throws on zero or negative input', () => {
+    expect(() => normalizeValidBefore(0)).toThrow('expected positive number');
+    expect(() => normalizeValidBefore(-1)).toThrow('expected positive number');
+  });
+
+  it('throws on invalid string input', () => {
+    expect(() => normalizeValidBefore('invalid')).toThrow('expected positive number');
   });
 });
