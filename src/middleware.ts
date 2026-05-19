@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { PublicClient, createPublicClient, http } from 'viem';
-import { createSettlementStateMachine, StateMachine } from './state-machine';
+import { createSettlementStateMachine, StateMachine, CreateSettlementOptions, SettlementRecord } from './state-machine';
 import { pollUntilResolved } from './poller';
 import { PROFILES, ProfileName, SettlementState, SettlementProfile, SettlementContext, ReceiptProvider, canonicalKey, normalizeValidBefore, TERMINAL_STATES } from './types';
 import { createViemReceiptProvider } from './adapters/viem';
@@ -38,6 +38,22 @@ function logError(message: string, details: Record<string, unknown>): void {
     ...details,
     timestamp: Date.now(),
   });
+}
+
+async function getOrCreateSettlement(
+  machine: StateMachine,
+  id: string,
+  opts: CreateSettlementOptions,
+): Promise<SettlementRecord> {
+  const existing = await machine.get(id);
+  if (existing) return existing;
+  try {
+    return await machine.create(id, opts);
+  } catch {
+    const retried = await machine.get(id);
+    if (retried) return retried;
+    throw new Error(`Settlement ${id} not found after create failure`);
+  }
 }
 
 export function createRecoveryMiddleware(config: RecoveryConfig) {
@@ -83,38 +99,32 @@ export function createRecoveryMiddleware(config: RecoveryConfig) {
 
     const hasTxHash = typeof txHash === 'string' && txHash.length > 0;
 
-    let record = machine.get(settlementId);
-    const existingRecord = (record instanceof Promise ? undefined : record);
-    if (!existingRecord) {
-      try {
-        record = machine.create(settlementId, {
-          profile,
-          txHash: hasTxHash ? (txHash as `0x${string}`) : undefined,
-          validBefore,
-          payer,
-          payTo,
-          value,
-          nonce,
-        });
-      } catch (err) {
-        if (err instanceof Error && err.message.includes('already exists')) {
-          record = machine.get(settlementId);
-        } else {
-          throw err;
-        }
-      }
-      if (record instanceof Promise) {
-        record = await record;
-      }
-    } else if (existingRecord instanceof Promise) {
-      record = await existingRecord;
-    } else {
-      record = existingRecord;
+    let record;
+    try {
+      record = await getOrCreateSettlement(machine, settlementId, {
+        profile,
+        txHash: hasTxHash ? (txHash as `0x${string}`) : undefined,
+        validBefore,
+        payer,
+        payTo,
+        value,
+        nonce,
+      });
+    } catch (err) {
+      logError('settlement.create.error', {
+        settlementId,
+        error: String(err),
+      });
+      return;
+    }
+
+    if (TERMINAL_STATES.has(record.state)) {
+      return;
     }
 
     if (!hasTxHash) {
       try {
-        machine.transition(settlementId, SettlementState.Unresolved);
+        await machine.transition(settlementId, SettlementState.Unresolved);
       } catch {}
       return;
     }

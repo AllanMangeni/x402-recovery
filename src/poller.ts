@@ -83,8 +83,11 @@ export async function pollUntilResolved(
     }
 
     if (receipt.status === 'success') {
-      const confirmations = receipt.confirmations ?? 1;
-      if (confirmations < requiredConfirmations) {
+      if (receipt.confirmations !== undefined && receipt.confirmations < requiredConfirmations) {
+        await delay(profile.pollIntervalMs);
+        continue;
+      }
+      if (receipt.confirmations === undefined && requiredConfirmations > 1) {
         await delay(profile.pollIntervalMs);
         continue;
       }

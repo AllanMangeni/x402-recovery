@@ -21,10 +21,20 @@ export function createViemReceiptProvider(client: PublicClient): ReceiptProvider
         status = 'reverted';
       }
 
+      let confirmations: number | undefined;
+      if (receipt.blockNumber != null) {
+        try {
+          const currentBlockNumber = await client.getBlockNumber();
+          confirmations = Number(currentBlockNumber - receipt.blockNumber) + 1;
+        } catch {
+          // cannot compute confirmations — leave undefined
+        }
+      }
+
       return {
         status,
         blockNumber: receipt.blockNumber,
-        confirmations: undefined,
+        confirmations,
       };
     },
   };

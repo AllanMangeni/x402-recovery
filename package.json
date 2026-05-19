@@ -31,17 +31,18 @@
   },
   "files": [
     "dist",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "README.md",
+    "LICENSE"
   ],
   "dependencies": {
     "viem": "^2.49.2"
   },
   "peerDependencies": {
-    "@beav3r/sdk": "*",
     "express": "^4.21.0"
   },
   "peerDependenciesMeta": {
-    "@beav3r/sdk": {
+    "express": {
       "optional": true
     }
   },

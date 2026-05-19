@@ -207,10 +207,17 @@ describe('SettlementStateMachine', () => {
     expect(a).not.toBe(b);
   });
 
-  it('canonicalKey distinguishes same nonce with different value', () => {
-    const a = canonicalKey({ payer: '0xA', payTo: '0xB', value: '100', nonce: '0xN1' });
-    const b = canonicalKey({ payer: '0xA', payTo: '0xB', value: '200', nonce: '0xN1' });
-    expect(a).not.toBe(b);
+  it('canonicalKey normalizes payer and payTo to lowercase', () => {
+    const a = canonicalKey({ payer: '0xAbC123', payTo: '0xDeF456', value: '100', nonce: '1' });
+    const b = canonicalKey({ payer: '0xabc123', payTo: '0xdef456', value: '100', nonce: '1' });
+    expect(a).toBe(b);
+    expect(a).toBe('0xabc123:0xdef456:100:1');
+  });
+
+  it('canonicalKey preserves value and nonce exactly (no lowercasing)', () => {
+    const key = canonicalKey({ payer: '0xA', payTo: '0xB', value: 'HeXvAlUe', nonce: '0xNoNcE' });
+    expect(key).toContain(':HeXvAlUe:');
+    expect(key).toContain(':0xNoNcE');
   });
 
   it('can drive all seven settlement states', () => {
@@ -278,7 +285,7 @@ describe('defineProfile', () => {
     expect(profile.maxPollWindowMs).toBe(60_000);
   });
 
-  it('validates requiredConfirmations > 0', () => {
+  it('validates requiredConfirmations as a positive integer', () => {
     expect(() =>
       defineProfile({
         name: 'bad',
@@ -286,6 +293,16 @@ describe('defineProfile', () => {
         pollIntervalMs: 3_000,
         maxPollWindowMs: 60_000,
         requiredConfirmations: 0,
+      }),
+    ).toThrow('must be greater than 0');
+
+    expect(() =>
+      defineProfile({
+        name: 'bad',
+        facilitatorTimeoutMs: 10_000,
+        pollIntervalMs: 3_000,
+        maxPollWindowMs: 60_000,
+        requiredConfirmations: 1.5,
       }),
     ).toThrow('must be greater than 0');
   });

@@ -64,7 +64,7 @@ export function defineProfile(profile: {
   if (profile.facilitatorTimeoutMs <= 0 || profile.pollIntervalMs <= 0 || profile.maxPollWindowMs <= 0) {
     throw new Error('defineProfile: all timing values must be greater than 0');
   }
-  if (profile.requiredConfirmations !== undefined && profile.requiredConfirmations <= 0) {
+  if (profile.requiredConfirmations !== undefined && (!Number.isInteger(profile.requiredConfirmations) || profile.requiredConfirmations <= 0)) {
     throw new Error('defineProfile: requiredConfirmations must be greater than 0');
   }
   return profile;
@@ -89,7 +89,7 @@ export function canonicalKey(input: {
   value: string;
   nonce: string;
 }): string {
-  return `${input.payer}:${input.payTo}:${input.value}:${input.nonce}`;
+  return `${input.payer.toLowerCase()}:${input.payTo.toLowerCase()}:${input.value}:${input.nonce}`;
 }
 
 export function normalizeValidBefore(input: number | bigint | string): number {
@@ -97,6 +97,11 @@ export function normalizeValidBefore(input: number | bigint | string): number {
   if (!Number.isFinite(asNum) || asNum <= 0) {
     throw new Error(`normalizeValidBefore: expected positive number, received ${input}`);
   }
+  // Heuristic: if value is under year 33658 in seconds (~1e12 ms), treat as
+  // seconds and convert to milliseconds. Values above this threshold are
+  // assumed to already be in milliseconds.
+  //   seconds range (2020s):   ~1.7e9  → converted
+  //   milliseconds range:       ~1.7e12 → left as-is
   if (asNum < 1_000_000_000_000) {
     return asNum * 1000;
   }

@@ -1,10 +1,9 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Request, Response } from 'express';
-import { createSettlementStateMachine, StateMachine } from '../src/state-machine';
-import { SettlementState, SettlementProfile, ReceiptProvider, normalizeValidBefore } from '../src/types';
+import { createSettlementStateMachine, StateMachine, SettlementRecord, CreateSettlementOptions } from '../src/state-machine';
+import { SettlementState, SettlementProfile, ReceiptProvider, TERMINAL_STATES } from '../src/types';
 import { createRecoveryMiddleware, PollDispatcher } from '../src/middleware';
 import * as pollerModule from '../src/poller';
-import * as stateMachineModule from '../src/state-machine';
 
 function fakeReceiptProvider(): ReceiptProvider {
   return {
@@ -22,6 +21,17 @@ function fakeRes(overrides?: Partial<Response>): Response {
     ...overrides,
   } as Response;
   return res;
+}
+
+function makeAsyncMachine(
+  syncMachine: ReturnType<typeof createSettlementStateMachine>,
+): StateMachine {
+  return {
+    create: (id, opts) => Promise.resolve(syncMachine.create(id, opts)),
+    get: (id) => Promise.resolve(syncMachine.get(id)),
+    transition: (id, state) => Promise.resolve(syncMachine.transition(id, state)),
+    list: () => Promise.resolve(syncMachine.list()),
+  };
 }
 
 describe('createRecoveryMiddleware', () => {
@@ -62,11 +72,16 @@ describe('createRecoveryMiddleware', () => {
   });
 
   it('calls pollUntilResolved when settlement context has timedOut: true', async () => {
-    const pollSpy = vi.spyOn(pollerModule, 'pollUntilResolved').mockResolvedValue({ id: 'tx-timedout', state: SettlementState.Confirmed });
+    const pollSpy = vi.spyOn(pollerModule, 'pollUntilResolved').mockResolvedValue({
+      id: 'tx-timedout',
+      state: SettlementState.Confirmed,
+    });
 
+    const machine = createSettlementStateMachine();
     const middleware = createRecoveryMiddleware({
       profile: 'datacenter',
       receiptProvider: fakeReceiptProvider(),
+      stateMachine: machine,
     });
 
     const req = fakeReq();
@@ -82,9 +97,11 @@ describe('createRecoveryMiddleware', () => {
     });
 
     const next = vi.fn();
-    middleware(req, res, next);
+    const middlewarePromise = middleware(req, res, next);
 
     expect(next).toHaveBeenCalledOnce();
+
+    await middlewarePromise;
 
     await vi.waitFor(
       () => {
@@ -97,9 +114,8 @@ describe('createRecoveryMiddleware', () => {
     );
   });
 
-  it('transitions to Unresolved when timedOut but no txHash', () => {
+  it('transitions to Unresolved when timedOut but no txHash', async () => {
     const machine = createSettlementStateMachine();
-    vi.spyOn(stateMachineModule, 'createSettlementStateMachine').mockReturnValue(machine);
 
     const middleware = createRecoveryMiddleware({
       profile: 'datacenter',
@@ -118,9 +134,11 @@ describe('createRecoveryMiddleware', () => {
     });
 
     const next = vi.fn();
-    middleware(req, res, next);
+    const middlewarePromise = middleware(req, res, next);
 
     expect(next).toHaveBeenCalledOnce();
+
+    await middlewarePromise;
 
     const record = machine.get('tx-no-hash');
     expect(record).toBeDefined();
@@ -130,14 +148,14 @@ describe('createRecoveryMiddleware', () => {
   it('transitions to Unresolved and logs when poller rejects', async () => {
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-    const machine = createSettlementStateMachine();
-    vi.spyOn(stateMachineModule, 'createSettlementStateMachine').mockReturnValue(machine);
-
     vi.spyOn(pollerModule, 'pollUntilResolved').mockRejectedValue(new Error('RPC timeout'));
+
+    const machine = createSettlementStateMachine();
 
     const middleware = createRecoveryMiddleware({
       profile: 'datacenter',
       receiptProvider: fakeReceiptProvider(),
+      stateMachine: machine,
     });
 
     const req = fakeReq();
@@ -153,9 +171,11 @@ describe('createRecoveryMiddleware', () => {
     });
 
     const next = vi.fn();
-    middleware(req, res, next);
+    const middlewarePromise = middleware(req, res, next);
 
     expect(next).toHaveBeenCalledOnce();
+
+    await middlewarePromise;
 
     await vi.waitFor(
       () => {
@@ -174,14 +194,16 @@ describe('createRecoveryMiddleware', () => {
   });
 
   it('isolates 50 concurrent settlements without cross-contamination', async () => {
-    const pollSpy = vi.spyOn(pollerModule, 'pollUntilResolved').mockResolvedValue({ id: '', state: SettlementState.Confirmed });
+    const pollSpy = vi
+      .spyOn(pollerModule, 'pollUntilResolved')
+      .mockResolvedValue({ id: '', state: SettlementState.Confirmed });
 
     const machine = createSettlementStateMachine();
-    vi.spyOn(stateMachineModule, 'createSettlementStateMachine').mockReturnValue(machine);
 
     const middleware = createRecoveryMiddleware({
       profile: 'datacenter',
       receiptProvider: fakeReceiptProvider(),
+      stateMachine: machine,
     });
 
     const count = 50;
@@ -222,7 +244,9 @@ describe('createRecoveryMiddleware', () => {
   });
 
   it('accepts a SettlementProfile object directly as config.profile', async () => {
-    const pollSpy = vi.spyOn(pollerModule, 'pollUntilResolved').mockResolvedValue({ id: 'tx-inline-profile', state: SettlementState.Confirmed });
+    const pollSpy = vi
+      .spyOn(pollerModule, 'pollUntilResolved')
+      .mockResolvedValue({ id: 'tx-inline-profile', state: SettlementState.Confirmed });
 
     const inlineProfile: SettlementProfile = {
       name: 'inline_test',
@@ -231,9 +255,12 @@ describe('createRecoveryMiddleware', () => {
       maxPollWindowMs: 30_000,
     };
 
+    const machine = createSettlementStateMachine();
+
     const middleware = createRecoveryMiddleware({
       profile: inlineProfile,
       receiptProvider: fakeReceiptProvider(),
+      stateMachine: machine,
     });
 
     const req = fakeReq();
@@ -249,9 +276,11 @@ describe('createRecoveryMiddleware', () => {
     });
 
     const next = vi.fn();
-    middleware(req, res, next);
+    const middlewarePromise = middleware(req, res, next);
 
     expect(next).toHaveBeenCalledOnce();
+
+    await middlewarePromise;
 
     await vi.waitFor(
       () => {
@@ -264,9 +293,9 @@ describe('createRecoveryMiddleware', () => {
     );
   });
 
-  it('duplicate settlement registration does not break middleware', () => {
+  it('duplicate settlement registration does not break middleware', async () => {
     const machine = createSettlementStateMachine();
-    machine.create('tx-dup', { profileName: 'datacenter' });
+    machine.create('tx-dup', { profileName: 'datacenter', txHash: '0xdead' });
 
     const middleware = createRecoveryMiddleware({
       profile: 'datacenter',
@@ -287,13 +316,19 @@ describe('createRecoveryMiddleware', () => {
     });
 
     const next = vi.fn();
+    const middlewarePromise = middleware(req, res, next);
     expect(() => middleware(req, res, next)).not.toThrow();
-    expect(next).toHaveBeenCalledOnce();
+    expect(next).toHaveBeenCalledTimes(2);
+
+    await middlewarePromise;
+
+    const record = machine.get('tx-dup');
+    expect(record).toBeDefined();
+    expect(record!.state).not.toBe(SettlementState.Unresolved);
   });
 
-  it('creates validBefore from seconds when ctx.validBefore is in seconds', () => {
+  it('creates validBefore from seconds when ctx.validBefore is in seconds', async () => {
     const machine = createSettlementStateMachine();
-    vi.spyOn(stateMachineModule, 'createSettlementStateMachine').mockReturnValue(machine);
 
     const middleware = createRecoveryMiddleware({
       profile: 'datacenter',
@@ -314,16 +349,16 @@ describe('createRecoveryMiddleware', () => {
     });
 
     const next = vi.fn();
-    middleware(req, res, next);
+    const middlewarePromise = middleware(req, res, next);
+    await middlewarePromise;
 
     const record = machine.get('tx-seconds');
     expect(record).toBeDefined();
     expect(record!.validBefore).toBe(1700000000000);
   });
 
-  it('keeps validBefore as-is when already in milliseconds', () => {
+  it('keeps validBefore as-is when already in milliseconds', async () => {
     const machine = createSettlementStateMachine();
-    vi.spyOn(stateMachineModule, 'createSettlementStateMachine').mockReturnValue(machine);
 
     const middleware = createRecoveryMiddleware({
       profile: 'datacenter',
@@ -344,18 +379,16 @@ describe('createRecoveryMiddleware', () => {
     });
 
     const next = vi.fn();
-    middleware(req, res, next);
+    const middlewarePromise = middleware(req, res, next);
+    await middlewarePromise;
 
     const record = machine.get('tx-ms');
     expect(record).toBeDefined();
     expect(record!.validBefore).toBe(2000000000000);
   });
 
-  it('generates canonicalKey when payer, payTo, value, nonce are available', () => {
-    const pollSpy = vi.spyOn(pollerModule, 'pollUntilResolved').mockResolvedValue({ id: 'tx-canon', state: SettlementState.Confirmed });
-
+  it('generates canonicalKey when payer, payTo, value, nonce are available', async () => {
     const dispatchSpy = vi.fn();
-
     const machine = createSettlementStateMachine();
 
     const middleware = createRecoveryMiddleware({
@@ -383,7 +416,8 @@ describe('createRecoveryMiddleware', () => {
     });
 
     const next = vi.fn();
-    middleware(req, res, next);
+    const middlewarePromise = middleware(req, res, next);
+    await middlewarePromise;
 
     expect(dispatchSpy).toHaveBeenCalledOnce();
     const dispatchArg = dispatchSpy.mock.calls[0][0];
@@ -391,9 +425,112 @@ describe('createRecoveryMiddleware', () => {
     expect(dispatchArg.canonicalKey).toBe('0xpayer:0xpayto:100:1');
   });
 
+  describe('terminal state protection', () => {
+    it('leaves Confirmed record unchanged on duplicate timeout', async () => {
+      const machine = createSettlementStateMachine();
+      machine.create('tx-confirmed', {
+        profileName: 'datacenter',
+        txHash: '0xabc',
+      });
+      machine.transition('tx-confirmed', SettlementState.Confirmed);
+
+      const middleware = createRecoveryMiddleware({
+        profile: 'datacenter',
+        receiptProvider: fakeReceiptProvider(),
+        stateMachine: machine,
+      });
+
+      const req = fakeReq();
+      const res = fakeRes({
+        locals: {
+          x402Settlement: {
+            settlementId: 'tx-confirmed',
+            txHash: '0xabc',
+            timedOut: true,
+          },
+        },
+      });
+
+      const next = vi.fn();
+      const middlewarePromise = middleware(req, res, next);
+      await middlewarePromise;
+
+      const record = machine.get('tx-confirmed');
+      expect(record!.state).toBe(SettlementState.Confirmed);
+    });
+
+    it('leaves ConfirmedLate record unchanged on duplicate timeout', async () => {
+      const machine = createSettlementStateMachine();
+      machine.create('tx-late', {
+        profileName: 'datacenter',
+        txHash: '0xdef',
+      });
+      machine.transition('tx-late', SettlementState.ConfirmedLate);
+
+      const middleware = createRecoveryMiddleware({
+        profile: 'datacenter',
+        receiptProvider: fakeReceiptProvider(),
+        stateMachine: machine,
+      });
+
+      const req = fakeReq();
+      const res = fakeRes({
+        locals: {
+          x402Settlement: {
+            settlementId: 'tx-late',
+            txHash: '0xdef',
+            timedOut: true,
+          },
+        },
+      });
+
+      const next = vi.fn();
+      const middlewarePromise = middleware(req, res, next);
+      await middlewarePromise;
+
+      const record = machine.get('tx-late');
+      expect(record!.state).toBe(SettlementState.ConfirmedLate);
+    });
+
+    it('leaves FailedOrphaned record unchanged on duplicate timeout', async () => {
+      const machine = createSettlementStateMachine();
+      machine.create('tx-orphaned', {
+        profileName: 'datacenter',
+        txHash: '0x999',
+      });
+      machine.transition('tx-orphaned', SettlementState.FailedOrphaned);
+
+      const middleware = createRecoveryMiddleware({
+        profile: 'datacenter',
+        receiptProvider: fakeReceiptProvider(),
+        stateMachine: machine,
+      });
+
+      const req = fakeReq();
+      const res = fakeRes({
+        locals: {
+          x402Settlement: {
+            settlementId: 'tx-orphaned',
+            txHash: '0x999',
+            timedOut: true,
+          },
+        },
+      });
+
+      const next = vi.fn();
+      const middlewarePromise = middleware(req, res, next);
+      await middlewarePromise;
+
+      const record = machine.get('tx-orphaned');
+      expect(record!.state).toBe(SettlementState.FailedOrphaned);
+    });
+  });
+
   describe('dispatcher mode', () => {
     it('dispatches instead of polling in-process', async () => {
-      const pollSpy = vi.spyOn(pollerModule, 'pollUntilResolved').mockResolvedValue({ id: '', state: SettlementState.Confirmed });
+      const pollSpy = vi
+        .spyOn(pollerModule, 'pollUntilResolved')
+        .mockResolvedValue({ id: '', state: SettlementState.Confirmed });
       const dispatchSpy = vi.fn();
 
       const machine = createSettlementStateMachine();
@@ -419,7 +556,8 @@ describe('createRecoveryMiddleware', () => {
       });
 
       const next = vi.fn();
-      middleware(req, res, next);
+      const middlewarePromise = middleware(req, res, next);
+      await middlewarePromise;
 
       expect(dispatchSpy).toHaveBeenCalledOnce();
       expect(dispatchSpy.mock.calls[0][0].settlementId).toBe('tx-dispatcher');
@@ -427,11 +565,10 @@ describe('createRecoveryMiddleware', () => {
       const record = machine.get('tx-dispatcher');
       expect(record).toBeDefined();
 
-      await new Promise((r) => setTimeout(r, 50));
       expect(pollSpy).not.toHaveBeenCalled();
     });
 
-    it('catches sync dispatch errors', () => {
+    it('catches sync dispatch errors', async () => {
       const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
       const dispatchSpy = vi.fn(() => {
         throw new Error('dispatch sync error');
@@ -460,7 +597,9 @@ describe('createRecoveryMiddleware', () => {
       });
 
       const next = vi.fn();
-      expect(() => middleware(req, res, next)).not.toThrow();
+      const middlewarePromise = middleware(req, res, next);
+      await middlewarePromise;
+
       expect(next).toHaveBeenCalledOnce();
       expect(consoleSpy).toHaveBeenCalledWith(
         expect.objectContaining({ event: 'settlement.dispatcher.error' }),
@@ -498,7 +637,8 @@ describe('createRecoveryMiddleware', () => {
       });
 
       const next = vi.fn();
-      expect(() => middleware(req, res, next)).not.toThrow();
+      const middlewarePromise = middleware(req, res, next);
+      await middlewarePromise;
 
       await vi.waitFor(
         () => {
@@ -522,6 +662,133 @@ describe('createRecoveryMiddleware', () => {
           },
         }),
       ).toThrow('pollDispatcher requires stateMachine');
+    });
+  });
+
+  describe('async StateMachine', () => {
+    it('works with a Promise-returning StateMachine', async () => {
+      const syncMachine = createSettlementStateMachine();
+      const asyncMachine = makeAsyncMachine(syncMachine);
+
+      const middleware = createRecoveryMiddleware({
+        profile: 'datacenter',
+        receiptProvider: fakeReceiptProvider(),
+        stateMachine: asyncMachine,
+      });
+
+      const req = fakeReq();
+      const res = fakeRes({
+        locals: {
+          x402Settlement: {
+            settlementId: 'tx-async-sm',
+            txHash: '0xdead',
+            timedOut: true,
+          },
+        },
+      });
+
+      const next = vi.fn();
+      const middlewarePromise = middleware(req, res, next);
+      await middlewarePromise;
+
+      const record = syncMachine.get('tx-async-sm');
+      expect(record).toBeDefined();
+      expect(record!.state).not.toBe(SettlementState.Unresolved);
+    });
+
+    it('handles duplicate registration with async StateMachine', async () => {
+      const syncMachine = createSettlementStateMachine();
+      syncMachine.create('tx-async-dup', {
+        profileName: 'datacenter',
+        txHash: '0xabc',
+      });
+      const asyncMachine = makeAsyncMachine(syncMachine);
+
+      const middleware = createRecoveryMiddleware({
+        profile: 'datacenter',
+        receiptProvider: fakeReceiptProvider(),
+        stateMachine: asyncMachine,
+      });
+
+      const req = fakeReq();
+      const res = fakeRes({
+        locals: {
+          x402Settlement: {
+            settlementId: 'tx-async-dup',
+            txHash: '0xabc',
+            timedOut: true,
+          },
+        },
+      });
+
+      const next = vi.fn();
+      const middlewarePromise = middleware(req, res, next);
+      await middlewarePromise;
+
+      const record = syncMachine.get('tx-async-dup');
+      expect(record).toBeDefined();
+    });
+
+    it('handles missing txHash with async StateMachine', async () => {
+      const syncMachine = createSettlementStateMachine();
+      const asyncMachine = makeAsyncMachine(syncMachine);
+
+      const middleware = createRecoveryMiddleware({
+        profile: 'datacenter',
+        receiptProvider: fakeReceiptProvider(),
+        stateMachine: asyncMachine,
+      });
+
+      const req = fakeReq();
+      const res = fakeRes({
+        locals: {
+          x402Settlement: {
+            settlementId: 'tx-async-nohash',
+            timedOut: true,
+          },
+        },
+      });
+
+      const next = vi.fn();
+      const middlewarePromise = middleware(req, res, next);
+      await middlewarePromise;
+
+      const record = syncMachine.get('tx-async-nohash');
+      expect(record).toBeDefined();
+      expect(record!.state).toBe(SettlementState.Unresolved);
+    });
+
+    it('dispatcher path works with async StateMachine', async () => {
+      const syncMachine = createSettlementStateMachine();
+      const asyncMachine = makeAsyncMachine(syncMachine);
+      const dispatchSpy = vi.fn();
+
+      const middleware = createRecoveryMiddleware({
+        profile: 'datacenter',
+        receiptProvider: fakeReceiptProvider(),
+        stateMachine: asyncMachine,
+        pollDispatcher: {
+          dispatchPoll: dispatchSpy,
+        },
+      });
+
+      const req = fakeReq();
+      const res = fakeRes({
+        locals: {
+          x402Settlement: {
+            settlementId: 'tx-async-dispatcher',
+            txHash: '0xdead',
+            timedOut: true,
+          },
+        },
+      });
+
+      const next = vi.fn();
+      const middlewarePromise = middleware(req, res, next);
+      await middlewarePromise;
+
+      expect(dispatchSpy).toHaveBeenCalledOnce();
+      expect(dispatchSpy.mock.calls[0][0].settlementId).toBe('tx-async-dispatcher');
     });
   });
 });
