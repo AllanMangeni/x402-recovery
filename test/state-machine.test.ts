@@ -4,9 +4,11 @@ import {
   SettlementState,
   PROFILES,
   canonicalKey,
+  batchCanonicalKey,
   defineProfile,
   normalizeValidBefore,
   StateMachine,
+  TERMINAL_STATES,
 } from '../src';
 
 describe('SettlementStateMachine', () => {
@@ -253,6 +255,7 @@ describe('SettlementStateMachine', () => {
       create: (id, opts) => syncMachine.create(id, opts),
       get: (id) => syncMachine.get(id),
       transition: (id, state) => syncMachine.transition(id, state),
+      update: (id, fields) => syncMachine.update(id, fields),
       list: () => syncMachine.list(),
     };
 
@@ -267,6 +270,165 @@ describe('SettlementStateMachine', () => {
 
     const list = await asyncMachine.list();
     expect(list).toHaveLength(1);
+  });
+});
+
+describe('v0.3.0 — scheme field', () => {
+  it('defaults scheme to exact when omitted', () => {
+    const machine = createSettlementStateMachine();
+    const record = machine.create('tx-scheme-default');
+    expect(record.scheme).toBe('exact');
+  });
+
+  it('stores scheme batch when provided', () => {
+    const machine = createSettlementStateMachine();
+    const record = machine.create('tx-scheme-batch', { scheme: 'batch' });
+    expect(record.scheme).toBe('batch');
+  });
+
+  it('stores scheme exact when explicitly provided', () => {
+    const machine = createSettlementStateMachine();
+    const record = machine.create('tx-scheme-explicit', { scheme: 'exact' });
+    expect(record.scheme).toBe('exact');
+  });
+});
+
+describe('v0.3.0 — dual txHash fields', () => {
+  it('stores claimTxHash on record creation', () => {
+    const machine = createSettlementStateMachine();
+    const record = machine.create('tx-claim', {
+      claimTxHash: '0xclaimabc',
+      scheme: 'batch',
+    });
+    expect(record.claimTxHash).toBe('0xclaimabc');
+    expect(record.settleTxHash).toBeUndefined();
+  });
+
+  it('leave settleTxHash undefined on record creation', () => {
+    const machine = createSettlementStateMachine();
+    const record = machine.create('tx-no-settle', { scheme: 'batch' });
+    expect(record.settleTxHash).toBeUndefined();
+  });
+
+  it('update sets settleTxHash on existing record', () => {
+    const machine = createSettlementStateMachine();
+    machine.create('tx-update-settle', { scheme: 'batch' });
+    const updated = machine.update('tx-update-settle', { settleTxHash: '0xsettle123' });
+    expect(updated.settleTxHash).toBe('0xsettle123');
+  });
+
+  it('update preserves other fields when setting settleTxHash', () => {
+    const machine = createSettlementStateMachine();
+    machine.create('tx-preserve', { scheme: 'batch', claimTxHash: '0xclaim456', payer: '0xpayer' });
+    const updated = machine.update('tx-preserve', { settleTxHash: '0xsettle789' });
+    expect(updated.settleTxHash).toBe('0xsettle789');
+    expect(updated.claimTxHash).toBe('0xclaim456');
+    expect(updated.payer).toBe('0xpayer');
+    expect(updated.scheme).toBe('batch');
+  });
+
+  it('update throws on missing record', () => {
+    const machine = createSettlementStateMachine();
+    expect(() => machine.update('nonexistent', { settleTxHash: '0xabc' })).toThrow(
+      'Settlement nonexistent not found',
+    );
+  });
+
+  it('update sets network and facilitatorResponse', () => {
+    const machine = createSettlementStateMachine();
+    machine.create('tx-network', { scheme: 'batch' });
+    const updated = machine.update('tx-network', {
+      network: 'base-sepolia',
+      facilitatorResponse: { status: 402 },
+    });
+    expect(updated.network).toBe('base-sepolia');
+    expect(updated.facilitatorResponse).toEqual({ status: 402 });
+  });
+});
+
+describe('v0.3.0 — batchCanonicalKey', () => {
+  it('produces identical output for same inputs', () => {
+    const a = batchCanonicalKey('0xA', '0xB', '0xN1', '0xclaim1');
+    const b = batchCanonicalKey('0xA', '0xB', '0xN1', '0xclaim1');
+    expect(a).toBe(b);
+  });
+
+  it('does not include value as an identity field', () => {
+    const key = batchCanonicalKey('0xA', '0xB', '0xN1', '0xclaim1');
+    expect(key).toBe('0xa:0xb:0xN1:0xclaim1');
+  });
+
+  it('lowercases payer, payTo, and claimTxHash', () => {
+    const key = batchCanonicalKey('0xAbC', '0xDeF', '0xN1', '0xClAiM');
+    expect(key).toBe('0xabc:0xdef:0xN1:0xclaim');
+  });
+
+  it('distinguishes different claimTxHash for same payer/payTo/nonce', () => {
+    const a = batchCanonicalKey('0xA', '0xB', '0xN1', '0xclaim1');
+    const b = batchCanonicalKey('0xA', '0xB', '0xN1', '0xclaim2');
+    expect(a).not.toBe(b);
+  });
+
+  it('distinguishes different nonce for same payer/payTo/claimTxHash', () => {
+    const a = batchCanonicalKey('0xA', '0xB', '0xN1', '0xclaim1');
+    const b = batchCanonicalKey('0xA', '0xB', '0xN2', '0xclaim1');
+    expect(a).not.toBe(b);
+  });
+
+  it('canonicalKey and batchCanonicalKey are distinct', () => {
+    const ck = canonicalKey({ payer: '0xA', payTo: '0xB', value: '100', nonce: '0xN1' });
+    const bk = batchCanonicalKey('0xA', '0xB', '0xN1', '0xclaim1');
+    expect(ck).not.toBe(bk);
+  });
+});
+
+describe('v0.3.0 — batch profile', () => {
+  it('batch profile exists in PROFILES', () => {
+    expect(PROFILES.batch).toBeDefined();
+  });
+
+  it('batch profile has indexerLagMs of 10_000', () => {
+    expect(PROFILES.batch.indexerLagMs).toBe(10_000);
+  });
+
+  it('batch profile has correct timing values', () => {
+    expect(PROFILES.batch.facilitatorTimeoutMs).toBe(30_000);
+    expect(PROFILES.batch.pollIntervalMs).toBe(8_000);
+    expect(PROFILES.batch.maxPollWindowMs).toBe(48_000);
+  });
+
+  it('datacenter profile does not have indexerLagMs set', () => {
+    expect(PROFILES.datacenter.indexerLagMs).toBeUndefined();
+  });
+
+  it('emerging_markets profile does not have indexerLagMs set', () => {
+    expect(PROFILES.emerging_markets.indexerLagMs).toBeUndefined();
+  });
+});
+
+describe('v0.3.0 — TERMINAL_STATES', () => {
+  it('includes SettleConfirmed', () => {
+    expect(TERMINAL_STATES.has(SettlementState.SettleConfirmed)).toBe(true);
+  });
+
+  it('does NOT include ClaimPending', () => {
+    expect(TERMINAL_STATES.has(SettlementState.ClaimPending)).toBe(false);
+  });
+
+  it('does NOT include ClaimConfirmed', () => {
+    expect(TERMINAL_STATES.has(SettlementState.ClaimConfirmed)).toBe(false);
+  });
+
+  it('does NOT include SettlePending', () => {
+    expect(TERMINAL_STATES.has(SettlementState.SettlePending)).toBe(false);
+  });
+
+  it('still includes existing terminal states', () => {
+    expect(TERMINAL_STATES.has(SettlementState.Confirmed)).toBe(true);
+    expect(TERMINAL_STATES.has(SettlementState.ConfirmedLate)).toBe(true);
+    expect(TERMINAL_STATES.has(SettlementState.Failed)).toBe(true);
+    expect(TERMINAL_STATES.has(SettlementState.FailedOrphaned)).toBe(true);
+    expect(TERMINAL_STATES.has(SettlementState.Unresolved)).toBe(true);
   });
 });
 
@@ -367,6 +529,17 @@ describe('defineProfile', () => {
     expect(record.profile.name).toBe('direct_fiber');
     expect(record.txHash).toBe('0xprofiletest');
     expect(record.state).toBe(SettlementState.Created);
+  });
+
+  it('accepts indexerLagMs in a custom profile', () => {
+    const profile = defineProfile({
+      name: 'custom_batch',
+      facilitatorTimeoutMs: 20_000,
+      pollIntervalMs: 5_000,
+      maxPollWindowMs: 60_000,
+      indexerLagMs: 15_000,
+    });
+    expect(profile.indexerLagMs).toBe(15_000);
   });
 });
 
