@@ -41,10 +41,11 @@ product value — it tells you the settlement succeeded, but later than expected
 
 ## Environment profiles
 
-| Profile | Facilitator timeout | Poll interval | Max poll window | Confirmations |
-|---|---:|---:|---:|---:|
-| datacenter | 5s | 2s | 30s | 1 |
-| emerging_markets | 15s | 5s | 90s | 1 |
+| Profile | Facilitator timeout | Poll interval | Max poll window | Confirmations | Indexer lag |
+|---|---:|---:|---:|---:|---:|
+| datacenter | 5s | 2s | 30s | 1 | 0ms |
+| emerging_markets | 15s | 5s | 90s | 1 | 0ms |
+| batch | 30s | 8s | 48s | 1 | 10s |
 
 Custom profiles are created with `defineProfile`:
 
@@ -113,6 +114,28 @@ Rules:
 - Dispatcher jobs must include `canonicalKey`
 - Middleware must not rely on `settlementId` alone for deduplication
 - `value` and `nonce` are strings by design — convert uint256 values upstream
+
+### `batchCanonicalKey(payer, payTo, nonce, claimTxHash)`
+
+Durable identity for batch settlements. Required when `scheme` is `'batch'`.
+
+```ts
+import { batchCanonicalKey } from 'x402-recovery';
+
+const key = batchCanonicalKey(
+  '0xSender',
+  '0xRecipient',
+  '0xa3f2...',
+  '0x60a960bd...',
+);
+// => "0xSender:0xRecipient:0xa3f2...:0x60a960bd..."
+```
+
+Rules:
+
+- Batch records must use `batchCanonicalKey`, not `canonicalKey`
+- `value` is not stable on the batch path — cumulative voucher totals can change across attempts
+- `claimTxHash` is immutable once mined and is the correct identity anchor
 
 ## Usage
 
@@ -253,9 +276,48 @@ class RedisStateMachine implements StateMachine {
   async create(id: string, opts?) { /* persist to Redis */ }
   async get(id: string) { /* read from Redis */ }
   async transition(id: string, newState: SettlementState) { /* persist in Redis */ }
+  async update(id: string, fields: SettlementRecordUpdate) { /* patch in Redis */ }
   async list() { /* scan Redis */ }
 }
 ```
+
+### `update()` for batch settlements
+
+The `StateMachine.update()` method patches an existing record in place. It is
+required for the batch path to write `settleTxHash` after `ClaimConfirmed`:
+
+```ts
+await machine.update('settlement-1', { settleTxHash: '0x7c6a7fe8...' });
+```
+
+Custom `StateMachine` implementations must implement `update()` for batch
+support. See the `SettlementRecordUpdate` type for allowed fields.
+
+### `afterSettleTimeout` hook
+
+Fires once at the moment a facilitator timeout is detected — before polling
+begins. The payload carries the raw facilitator response and scheme metadata.
+
+```ts
+const app = express();
+
+app.use(
+  createRecoveryMiddleware({
+    profile: 'batch',
+    rpcUrl: process.env.BASE_RPC_URL!,
+    afterSettleTimeout: async (payload) => {
+      console.log(payload.scheme);              // 'batch'
+      console.log(payload.facilitatorResponse); // raw facilitator error
+    },
+  }),
+);
+```
+
+Firing semantics:
+
+- Middleware path: fires immediately at `timedOut === true`, before record creation
+- Direct poller path: fires at poller start
+- The two paths are mutually exclusive — the hook fires exactly once per timeout event
 
 ### Beav3r pre-execution guard
 
@@ -413,6 +475,36 @@ thrown at middleware creation otherwise.
 
 `validBefore` is now normalized to Unix milliseconds internally. Use
 `normalizeValidBefore` if your values come from EIP-3009 seconds.
+
+## Migration from v0.2.x
+
+### Batch settlements
+
+If you handle batch-settlement flows, use `batchCanonicalKey` instead of
+`canonicalKey` for record identity. Use `machine.update()` to write
+`settleTxHash` after `ClaimConfirmed`.
+
+Custom `StateMachine` implementations must add `update()` to remain compatible.
+
+### ProfileName
+
+If you switch exhaustively on `ProfileName`, add a handler for `'batch'`.
+
+### SettlementContext fields
+
+New optional fields are available on `SettlementContext`:
+
+- `scheme` — `'exact'` (default) or `'batch'`
+- `claimTxHash` — known at record creation for batch
+- `settleTxHash` — populated post-`ClaimConfirmed` via `update()`
+- `network` — caller-supplied, no default
+- `facilitatorResponse` — raw facilitator error payload
+
+### `timedOut` is now optional
+
+`SettlementContext.timedOut` is now optional (`boolean | undefined`). The
+middleware still treats a falsy or absent `timedOut` as "no timeout detected"
+and returns early.
 
 ## Related reading
 

@@ -1,5 +1,32 @@
 # x402-recovery
 
+## [0.3.0] - 2026-05-27
+
+### Added
+
+- `scheme: 'exact' | 'batch'` field on `SettlementRecord` — defaults to `'exact'`, no breaking change
+- Batch state decomposition: `ClaimPending`, `ClaimConfirmed`, `SettlePending`, `SettleConfirmed`
+- `claimTxHash` and `settleTxHash` as separate fields on `SettlementRecord` for the batch path
+- `update()` method on `StateMachine` interface for post-creation record patching (required for writing `settleTxHash` after `ClaimConfirmed`)
+- `batchCanonicalKey(payer, payTo, nonce, claimTxHash)` — durable identity for batch settlements where `value` is not stable across attempts
+- `indexerLagMs` on `SettlementProfile` — explicit wait between `ClaimConfirmed` and settle dispatch, models facilitator read-side consistency lag
+- Built-in `batch` profile: `pollIntervalMs: 8_000`, `maxPollWindowMs: 48_000`, `indexerLagMs: 10_000`
+- `AfterSettleTimeoutPayload` and `AfterSettleTimeoutHook` types
+- `afterSettleTimeout` hook on `createRecoveryMiddleware` and `pollUntilResolved` — fires once at timeout detection; middleware and poller paths are mutually exclusive by construction, no double-fire
+- `scheme`, `claimTxHash`, `settleTxHash`, `network`, `facilitatorResponse` added to `SettlementContext`
+- `SettleConfirmed` added to irreversible terminal states
+
+### Changed
+
+- `ProfileName` union extended to `'datacenter' | 'emerging_markets' | 'batch'`
+- Poller extracts `pollReceiptLoop` as a reusable internal helper
+
+### Notes
+
+- All existing v0.2.0 tests pass without modification
+- `canonicalKey` is unchanged — use `batchCanonicalKey` for batch records
+- `value` and `nonce` remain strings throughout
+
 ## v0.2.0
 
 ### Changed

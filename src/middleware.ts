@@ -2,7 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { PublicClient, createPublicClient, http } from 'viem';
 import { createSettlementStateMachine, StateMachine, CreateSettlementOptions, SettlementRecord } from './state-machine';
 import { pollUntilResolved } from './poller';
-import { PROFILES, ProfileName, SettlementState, SettlementProfile, SettlementContext, ReceiptProvider, canonicalKey, normalizeValidBefore } from './types';
+import { PROFILES, ProfileName, SettlementState, SettlementProfile, SettlementContext, ReceiptProvider, canonicalKey, batchCanonicalKey, normalizeValidBefore, AfterSettleTimeoutHook } from './types';
 import { createViemReceiptProvider } from './adapters/viem';
 
 declare global {
@@ -18,6 +18,7 @@ const IRREVERSIBLE_STATES: ReadonlySet<SettlementState> = new Set([
   SettlementState.ConfirmedLate,
   SettlementState.Failed,
   SettlementState.FailedOrphaned,
+  SettlementState.SettleConfirmed,
 ]);
 
 
@@ -38,6 +39,7 @@ export interface RecoveryConfig {
   receiptProvider?: ReceiptProvider;
   stateMachine?: StateMachine;
   pollDispatcher?: PollDispatcher;
+  afterSettleTimeout?: AfterSettleTimeoutHook;
 }
 
 function logError(message: string, details: Record<string, unknown>): void {
@@ -93,6 +95,24 @@ export function createRecoveryMiddleware(config: RecoveryConfig) {
       return;
     }
 
+    const scheme = ctx.scheme ?? 'exact';
+
+    if (config.afterSettleTimeout) {
+      try {
+        await Promise.resolve(config.afterSettleTimeout({
+          payer: ctx.payer,
+          payTo: ctx.payTo,
+          value: ctx.value,
+          nonce: ctx.nonce,
+          txHash: ctx.txHash,
+          validBefore: ctx.validBefore !== undefined ? normalizeValidBefore(ctx.validBefore) : undefined,
+          network: ctx.network,
+          facilitatorResponse: ctx.facilitatorResponse,
+          scheme,
+        }));
+      } catch {}
+    }
+
     const { settlementId, txHash, payer, payTo, value, nonce } = ctx;
 
     let validBefore: number | undefined;
@@ -101,8 +121,12 @@ export function createRecoveryMiddleware(config: RecoveryConfig) {
     }
 
     let ck: string | undefined;
-    if (payer && payTo && value && nonce) {
-      ck = canonicalKey({ payer, payTo, value, nonce });
+    if (payer && payTo && value !== undefined && nonce) {
+      if (scheme === 'batch' && ctx.claimTxHash) {
+        ck = batchCanonicalKey(payer, payTo, nonce, ctx.claimTxHash);
+      } else {
+        ck = canonicalKey({ payer, payTo, value, nonce });
+      }
     }
 
     const hasTxHash = typeof txHash === 'string' && txHash.length > 0;
@@ -111,12 +135,16 @@ export function createRecoveryMiddleware(config: RecoveryConfig) {
     try {
       record = await getOrCreateSettlement(machine, settlementId, {
         profile,
+        scheme,
         txHash: hasTxHash ? (txHash as `0x${string}`) : undefined,
+        claimTxHash: ctx.claimTxHash as `0x${string}` | undefined,
         validBefore,
         payer,
         payTo,
         value,
         nonce,
+        network: ctx.network,
+        facilitatorResponse: ctx.facilitatorResponse,
       });
     } catch (err) {
       logError('settlement.create.error', {

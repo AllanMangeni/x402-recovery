@@ -6,6 +6,10 @@ export enum SettlementState {
   ConfirmedLate = 'confirmed_late',
   Failed = 'failed',
   FailedOrphaned = 'failed_orphaned',
+  ClaimPending = 'claim_pending',
+  ClaimConfirmed = 'claim_confirmed',
+  SettlePending = 'settle_pending',
+  SettleConfirmed = 'settle_confirmed',
 }
 
 export const TERMINAL_STATES: ReadonlySet<SettlementState> = new Set([
@@ -14,6 +18,7 @@ export const TERMINAL_STATES: ReadonlySet<SettlementState> = new Set([
   SettlementState.Failed,
   SettlementState.FailedOrphaned,
   SettlementState.Unresolved,
+  SettlementState.SettleConfirmed,
 ]);
 
 export interface SettlementProfile {
@@ -22,6 +27,7 @@ export interface SettlementProfile {
   pollIntervalMs: number;
   maxPollWindowMs: number;
   requiredConfirmations?: number;
+  indexerLagMs?: number;
 }
 
 export const PROFILES = {
@@ -40,6 +46,15 @@ export const PROFILES = {
     maxPollWindowMs: 90_000,
     requiredConfirmations: 1,
   }),
+
+  batch: defineProfile({
+    name: 'batch',
+    facilitatorTimeoutMs: 30_000,
+    pollIntervalMs: 8_000,
+    maxPollWindowMs: 48_000,
+    requiredConfirmations: 1,
+    indexerLagMs: 10_000,
+  }),
 } as const;
 
 export type ProfileName = keyof typeof PROFILES;
@@ -50,6 +65,7 @@ export function defineProfile(profile: {
   pollIntervalMs: number;
   maxPollWindowMs: number;
   requiredConfirmations?: number;
+  indexerLagMs?: number;
 }): SettlementProfile {
   if (profile.pollIntervalMs >= profile.maxPollWindowMs) {
     throw new Error(
@@ -74,13 +90,18 @@ export interface SettlementContext {
   settlementId: string;
   simulationId?: string;
   txHash?: string;
+  claimTxHash?: string;
+  settleTxHash?: string;
   validBefore?: number;
-  timedOut: boolean;
+  timedOut?: boolean;
   bridgeRef?: string;
   payer?: string;
   payTo?: string;
   value?: string;
   nonce?: string;
+  scheme?: 'exact' | 'batch';
+  network?: string;
+  facilitatorResponse?: unknown;
 }
 
 export function canonicalKey(input: {
@@ -106,6 +127,10 @@ export function normalizeValidBefore(input: number | bigint | string): number {
     return asNum * 1000;
   }
   return asNum;
+}
+
+export function batchCanonicalKey(payer: string, payTo: string, nonce: string, claimTxHash: string): string {
+  return `${payer.toLowerCase()}:${payTo.toLowerCase()}:${nonce}:${claimTxHash.toLowerCase()}`;
 }
 
 export interface TransitionEvent {
@@ -135,3 +160,17 @@ export interface SettlementReceipt {
   blockNumber?: bigint;
   confirmations?: number;
 }
+
+export interface AfterSettleTimeoutPayload {
+  payer?: string;
+  payTo?: string;
+  value?: string;
+  nonce?: string;
+  txHash?: string;
+  validBefore?: number;
+  network?: string;
+  facilitatorResponse?: unknown;
+  scheme: 'exact' | 'batch';
+}
+
+export type AfterSettleTimeoutHook = (payload: AfterSettleTimeoutPayload) => void | Promise<void>;

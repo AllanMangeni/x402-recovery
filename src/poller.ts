@@ -1,5 +1,5 @@
 import { StateMachine } from './state-machine';
-import { SettlementState, SettlementProfile, ReceiptProvider } from './types';
+import { SettlementState, SettlementProfile, ReceiptProvider, AfterSettleTimeoutHook } from './types';
 
 export interface PollUntilResolvedParams {
   id: string;
@@ -10,6 +10,7 @@ export interface PollUntilResolvedParams {
   now?: () => number;
   delay?: (ms: number) => Promise<void>;
   signal?: AbortSignal;
+  afterSettleTimeout?: AfterSettleTimeoutHook;
 }
 
 function defaultDelay(ms: number): Promise<void> {
@@ -32,37 +33,29 @@ function isTransactionNotFoundError(error: unknown): boolean {
   return false;
 }
 
-export async function pollUntilResolved(
-  params: PollUntilResolvedParams,
-): Promise<{ id: string; state: SettlementState }> {
+async function pollReceiptLoop(params: {
+  id: string;
+  txHash: `0x${string}`;
+  profile: SettlementProfile;
+  machine: StateMachine;
+  receiptProvider: ReceiptProvider;
+  now: () => number;
+  delay: (ms: number) => Promise<void>;
+  signal: AbortSignal | undefined;
+  createdAt: number;
+  deadline: number;
+  successState: SettlementState;
+}): Promise<SettlementState> {
   const {
-    id,
-    txHash,
-    profile,
-    machine,
-    receiptProvider,
-    now = Date.now,
-    delay = defaultDelay,
-    signal,
+    id, txHash, profile, machine, receiptProvider,
+    now, delay, signal, createdAt, deadline, successState,
   } = params;
-
-  const record = await machine.get(id);
-
-  if (!record) {
-    throw new Error(`Settlement ${id} not found`);
-  }
-
-  const createdAt = record.createdAt;
-
-  await machine.transition(id, SettlementState.Polling);
-
-  const deadline = now() + profile.maxPollWindowMs;
   const requiredConfirmations = profile.requiredConfirmations ?? 1;
 
   while (now() < deadline) {
     if (signal?.aborted) {
       await machine.transition(id, SettlementState.Unresolved);
-      return { id, state: SettlementState.Unresolved };
+      return SettlementState.Unresolved;
     }
 
     let receipt;
@@ -74,7 +67,7 @@ export async function pollUntilResolved(
         continue;
       }
       await machine.transition(id, SettlementState.Unresolved);
-      return { id, state: SettlementState.Unresolved };
+      return SettlementState.Unresolved;
     }
 
     if (!receipt) {
@@ -93,22 +86,22 @@ export async function pollUntilResolved(
       }
 
       if (now() - createdAt <= profile.facilitatorTimeoutMs) {
-        await machine.transition(id, SettlementState.Confirmed);
-        return { id, state: SettlementState.Confirmed };
+        await machine.transition(id, successState);
+        return successState;
       } else {
         await machine.transition(id, SettlementState.ConfirmedLate);
-        return { id, state: SettlementState.ConfirmedLate };
+        return SettlementState.ConfirmedLate;
       }
     }
 
     if (receipt.status === 'reverted') {
       await machine.transition(id, SettlementState.Failed);
-      return { id, state: SettlementState.Failed };
+      return SettlementState.Failed;
     }
 
     if (receipt.status === 'unknown') {
       await machine.transition(id, SettlementState.Unresolved);
-      return { id, state: SettlementState.Unresolved };
+      return SettlementState.Unresolved;
     }
 
     await delay(profile.pollIntervalMs);
@@ -117,9 +110,140 @@ export async function pollUntilResolved(
   const updatedRecord = await machine.get(id);
   if (updatedRecord?.validBefore !== undefined && now() > updatedRecord.validBefore) {
     await machine.transition(id, SettlementState.FailedOrphaned);
-    return { id, state: SettlementState.FailedOrphaned };
+    return SettlementState.FailedOrphaned;
   }
 
   await machine.transition(id, SettlementState.Failed);
-  return { id, state: SettlementState.Failed };
+  return SettlementState.Failed;
+}
+
+export async function pollUntilResolved(
+  params: PollUntilResolvedParams,
+): Promise<{ id: string; state: SettlementState }> {
+  const {
+    id,
+    txHash,
+    profile,
+    machine,
+    receiptProvider,
+    now = Date.now,
+    delay = defaultDelay,
+    signal,
+    afterSettleTimeout,
+  } = params;
+
+  const record = await machine.get(id);
+
+  if (!record) {
+    throw new Error(`Settlement ${id} not found`);
+  }
+
+  const createdAt = record.createdAt;
+  const scheme = record.scheme;
+  const deadline = now() + profile.maxPollWindowMs;
+
+  if (afterSettleTimeout) {
+    try {
+      await Promise.resolve(afterSettleTimeout({
+        payer: record.payer,
+        payTo: record.payTo,
+        value: record.value,
+        nonce: record.nonce,
+        txHash: record.txHash,
+        validBefore: record.validBefore,
+        network: record.network,
+        facilitatorResponse: record.facilitatorResponse,
+        scheme,
+      }));
+    } catch {}
+  }
+
+  if (scheme === 'batch') {
+    return pollBatchPath(id, txHash, profile, machine, receiptProvider, now, delay, signal, createdAt, deadline);
+  }
+
+  await machine.transition(id, SettlementState.Polling);
+
+  const state = await pollReceiptLoop({
+    id, txHash, profile, machine, receiptProvider,
+    now, delay, signal, createdAt, deadline,
+    successState: SettlementState.Confirmed,
+  });
+
+  return { id, state };
+}
+
+async function pollBatchPath(
+  id: string,
+  fallbackTxHash: `0x${string}`,
+  profile: SettlementProfile,
+  machine: StateMachine,
+  receiptProvider: ReceiptProvider,
+  now: () => number,
+  delay: (ms: number) => Promise<void>,
+  signal: AbortSignal | undefined,
+  createdAt: number,
+  deadline: number,
+): Promise<{ id: string; state: SettlementState }> {
+  await machine.transition(id, SettlementState.ClaimPending);
+
+  const record = await machine.get(id);
+  const claimTxHash = (record?.claimTxHash ?? fallbackTxHash) as `0x${string}`;
+
+  const claimResult = await pollReceiptLoop({
+    id, txHash: claimTxHash, profile, machine, receiptProvider,
+    now, delay, signal, createdAt, deadline,
+    successState: SettlementState.ClaimConfirmed,
+  });
+
+  if (claimResult !== SettlementState.ClaimConfirmed) {
+    return { id, state: claimResult };
+  }
+
+  const indexerLagMs = profile.indexerLagMs ?? 10_000;
+  await delay(indexerLagMs);
+
+  await machine.transition(id, SettlementState.SettlePending);
+
+  const settleResult = await pollSettlePhase(
+    id, profile, machine, receiptProvider, now, delay, signal, createdAt, deadline,
+  );
+
+  return { id, state: settleResult };
+}
+
+async function pollSettlePhase(
+  id: string,
+  profile: SettlementProfile,
+  machine: StateMachine,
+  receiptProvider: ReceiptProvider,
+  now: () => number,
+  delay: (ms: number) => Promise<void>,
+  signal: AbortSignal | undefined,
+  createdAt: number,
+  deadline: number,
+): Promise<SettlementState> {
+  while (now() < deadline) {
+    const currentRecord = await machine.get(id);
+    if (!currentRecord?.settleTxHash) {
+      await delay(profile.pollIntervalMs);
+      continue;
+    }
+
+    const settleTxHash = currentRecord.settleTxHash as `0x${string}`;
+    return pollReceiptLoop({
+      id, txHash: settleTxHash, profile, machine, receiptProvider,
+      now, delay, signal, createdAt, deadline,
+      successState: SettlementState.SettleConfirmed,
+    });
+  }
+
+  const updatedRecord = await machine.get(id);
+  if (updatedRecord?.validBefore !== undefined && now() > updatedRecord.validBefore) {
+    await machine.transition(id, SettlementState.FailedOrphaned);
+    return SettlementState.FailedOrphaned;
+  }
+
+  await machine.transition(id, SettlementState.Failed);
+  return SettlementState.Failed;
 }

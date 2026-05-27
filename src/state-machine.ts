@@ -4,7 +4,10 @@ export interface SettlementRecord {
   id: string;
   state: SettlementState;
   profile: SettlementProfile;
+  scheme: 'exact' | 'batch';
   txHash?: string;
+  claimTxHash?: string;
+  settleTxHash?: string;
   validBefore?: number;
   createdAt: number;
   updatedAt: number;
@@ -14,12 +17,17 @@ export interface SettlementRecord {
   nonce?: string;
   simulationId?: string;
   bridgeRef?: string;
+  network?: string;
+  facilitatorResponse?: unknown;
 }
 
 export interface CreateSettlementOptions {
   profileName?: ProfileName;
   profile?: SettlementProfile;
+  scheme?: 'exact' | 'batch';
   txHash?: string;
+  claimTxHash?: string;
+  settleTxHash?: string;
   validBefore?: number;
   payer?: string;
   payTo?: string;
@@ -27,6 +35,21 @@ export interface CreateSettlementOptions {
   nonce?: string;
   simulationId?: string;
   bridgeRef?: string;
+  network?: string;
+  facilitatorResponse?: unknown;
+}
+
+export interface SettlementRecordUpdate {
+  txHash?: string;
+  claimTxHash?: string;
+  settleTxHash?: string;
+  validBefore?: number;
+  payer?: string;
+  payTo?: string;
+  value?: string;
+  nonce?: string;
+  network?: string;
+  facilitatorResponse?: unknown;
 }
 
 export interface StateMachine {
@@ -42,6 +65,11 @@ export interface StateMachine {
   transition(
     id: string,
     newState: SettlementState,
+  ): SettlementRecord | Promise<SettlementRecord>;
+
+  update(
+    id: string,
+    fields: SettlementRecordUpdate,
   ): SettlementRecord | Promise<SettlementRecord>;
 
   list(): SettlementRecord[] | Promise<SettlementRecord[]>;
@@ -90,7 +118,10 @@ export function createSettlementStateMachine(options?: StateMachineOptions): Sta
         id,
         state: SettlementState.Created,
         profile,
+        scheme: opts?.scheme ?? 'exact',
         txHash: opts?.txHash,
+        claimTxHash: opts?.claimTxHash,
+        settleTxHash: opts?.settleTxHash,
         validBefore: opts?.validBefore,
         createdAt: now,
         updatedAt: now,
@@ -100,6 +131,8 @@ export function createSettlementStateMachine(options?: StateMachineOptions): Sta
         nonce: opts?.nonce,
         simulationId: opts?.simulationId,
         bridgeRef: opts?.bridgeRef,
+        network: opts?.network,
+        facilitatorResponse: opts?.facilitatorResponse,
       };
       records.set(id, record);
       return record;
@@ -131,6 +164,26 @@ export function createSettlementStateMachine(options?: StateMachineOptions): Sta
         nonce: record.nonce,
       });
 
+      return record;
+    },
+
+    update(id: string, fields: SettlementRecordUpdate): SettlementRecord {
+      const record = records.get(id);
+      if (!record) {
+        throw new Error(`Settlement ${id} not found`);
+      }
+      if (fields.txHash !== undefined) record.txHash = fields.txHash;
+      if (fields.claimTxHash !== undefined) record.claimTxHash = fields.claimTxHash;
+      if (fields.settleTxHash !== undefined) record.settleTxHash = fields.settleTxHash;
+      if (fields.validBefore !== undefined) record.validBefore = fields.validBefore;
+      if (fields.payer !== undefined) record.payer = fields.payer;
+      if (fields.payTo !== undefined) record.payTo = fields.payTo;
+      if (fields.value !== undefined) record.value = fields.value;
+      if (fields.nonce !== undefined) record.nonce = fields.nonce;
+      if (fields.network !== undefined) record.network = fields.network;
+      if (fields.facilitatorResponse !== undefined) record.facilitatorResponse = fields.facilitatorResponse;
+      record.updatedAt = Date.now();
+      records.set(id, record);
       return record;
     },
 

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Request, Response } from 'express';
 import { createSettlementStateMachine, StateMachine, SettlementRecord, CreateSettlementOptions } from '../src/state-machine';
-import { SettlementState, SettlementProfile, ReceiptProvider, TERMINAL_STATES } from '../src/types';
+import { SettlementState, SettlementProfile, ReceiptProvider, TERMINAL_STATES, batchCanonicalKey } from '../src/types';
 import { createRecoveryMiddleware, PollDispatcher } from '../src/middleware';
 import * as pollerModule from '../src/poller';
 
@@ -897,6 +897,425 @@ describe('createRecoveryMiddleware', () => {
 
       expect(dispatchSpy).toHaveBeenCalledOnce();
       expect(dispatchSpy.mock.calls[0][0].settlementId).toBe('tx-async-dispatcher');
+    });
+  });
+
+  describe('v0.3.0 — afterSettleTimeout hook', () => {
+    it('fires when timedOut is true', async () => {
+      const hook = vi.fn();
+      const middleware = createRecoveryMiddleware({
+        profile: 'datacenter',
+        receiptProvider: fakeReceiptProvider(),
+        afterSettleTimeout: hook,
+      });
+
+      const req = fakeReq();
+      const res = fakeRes({
+        locals: {
+          x402Settlement: {
+            settlementId: 'hook-fire',
+            txHash: '0xdead',
+            timedOut: true,
+            payer: '0xpayer',
+            payTo: '0xpayto',
+            value: '100',
+            nonce: '1',
+            network: 'base-sepolia',
+            facilitatorResponse: { status: 402, body: 'Payment Required' },
+          },
+        },
+      });
+
+      const next = vi.fn();
+      const middlewarePromise = middleware(req, res, next);
+      await middlewarePromise;
+
+      expect(hook).toHaveBeenCalledOnce();
+      expect(hook.mock.calls[0][0]).toMatchObject({
+        payer: '0xpayer',
+        payTo: '0xpayto',
+        value: '100',
+        nonce: '1',
+        txHash: '0xdead',
+        network: 'base-sepolia',
+        facilitatorResponse: { status: 402, body: 'Payment Required' },
+        scheme: 'exact',
+      });
+    });
+
+    it('fires with scheme batch when context has scheme batch', async () => {
+      const hook = vi.fn();
+      const middleware = createRecoveryMiddleware({
+        profile: 'batch',
+        receiptProvider: fakeReceiptProvider(),
+        afterSettleTimeout: hook,
+      });
+
+      const req = fakeReq();
+      const res = fakeRes({
+        locals: {
+          x402Settlement: {
+            settlementId: 'hook-batch',
+            txHash: '0xdead',
+            claimTxHash: '0xclaim123',
+            timedOut: true,
+            scheme: 'batch',
+          },
+        },
+      });
+
+      const next = vi.fn();
+      const middlewarePromise = middleware(req, res, next);
+      await middlewarePromise;
+
+      expect(hook).toHaveBeenCalledOnce();
+      expect(hook.mock.calls[0][0].scheme).toBe('batch');
+    });
+
+    it('does NOT fire when timedOut is false', async () => {
+      const hook = vi.fn();
+      const middleware = createRecoveryMiddleware({
+        profile: 'datacenter',
+        receiptProvider: fakeReceiptProvider(),
+        afterSettleTimeout: hook,
+      });
+
+      const req = fakeReq();
+      const res = fakeRes({
+        locals: {
+          x402Settlement: {
+            settlementId: 'no-hook',
+            txHash: '0xdead',
+            timedOut: false,
+          },
+        },
+      });
+
+      const next = vi.fn();
+      await middleware(req, res, next);
+
+      expect(hook).not.toHaveBeenCalled();
+    });
+
+    it('fires before record creation', async () => {
+      const callOrder: string[] = [];
+      const hook = vi.fn(() => {
+        callOrder.push('hook');
+      });
+
+      const machine = createSettlementStateMachine();
+      const createSpy = vi.spyOn(machine, 'create');
+
+      const middleware = createRecoveryMiddleware({
+        profile: 'datacenter',
+        receiptProvider: fakeReceiptProvider(),
+        stateMachine: machine,
+        afterSettleTimeout: hook,
+      });
+
+      const req = fakeReq();
+      const res = fakeRes({
+        locals: {
+          x402Settlement: {
+            settlementId: 'hook-order',
+            txHash: '0xdead',
+            timedOut: true,
+          },
+        },
+      });
+
+      const next = vi.fn();
+      const middlewarePromise = middleware(req, res, next);
+      await middlewarePromise;
+
+      expect(hook).toHaveBeenCalledOnce();
+      expect(createSpy).toHaveBeenCalledOnce();
+      const hookCallTime = hook.mock.invocationCallOrder[0];
+      const createCallTime = createSpy.mock.invocationCallOrder[0];
+      expect(hookCallTime).toBeLessThan(createCallTime);
+    });
+
+    it('hook missing fields are undefined, not empty strings', async () => {
+      const hook = vi.fn();
+      const middleware = createRecoveryMiddleware({
+        profile: 'datacenter',
+        receiptProvider: fakeReceiptProvider(),
+        afterSettleTimeout: hook,
+      });
+
+      const req = fakeReq();
+      const res = fakeRes({
+        locals: {
+          x402Settlement: {
+            settlementId: 'hook-sparse',
+            timedOut: true,
+          },
+        },
+      });
+
+      const next = vi.fn();
+      const middlewarePromise = middleware(req, res, next);
+      await middlewarePromise;
+
+      const payload = hook.mock.calls[0][0];
+      expect(payload.payer).toBeUndefined();
+      expect(payload.payTo).toBeUndefined();
+      expect(payload.value).toBeUndefined();
+      expect(payload.nonce).toBeUndefined();
+      expect(payload.txHash).toBeUndefined();
+      expect(payload.network).toBeUndefined();
+      expect(payload.facilitatorResponse).toBeUndefined();
+      expect(payload.validBefore).toBeUndefined();
+      expect(payload.scheme).toBe('exact');
+    });
+
+    it('hook sync error does not crash middleware', async () => {
+      const hook = vi.fn(() => {
+        throw new Error('hook sync error');
+      });
+
+      const middleware = createRecoveryMiddleware({
+        profile: 'datacenter',
+        receiptProvider: fakeReceiptProvider(),
+        afterSettleTimeout: hook,
+      });
+
+      const req = fakeReq();
+      const res = fakeRes({
+        locals: {
+          x402Settlement: {
+            settlementId: 'hook-sync-crash',
+            txHash: '0xdead',
+            timedOut: true,
+          },
+        },
+      });
+
+      const next = vi.fn();
+      const middlewarePromise = middleware(req, res, next);
+      expect(() => middlewarePromise).not.toThrow();
+
+      await middlewarePromise;
+      expect(hook).toHaveBeenCalledOnce();
+      expect(next).toHaveBeenCalledOnce();
+    });
+
+    it('hook async rejection does not crash middleware', async () => {
+      const hook = vi.fn(() => Promise.reject(new Error('hook async error')));
+
+      const middleware = createRecoveryMiddleware({
+        profile: 'datacenter',
+        receiptProvider: fakeReceiptProvider(),
+        afterSettleTimeout: hook,
+      });
+
+      const req = fakeReq();
+      const res = fakeRes({
+        locals: {
+          x402Settlement: {
+            settlementId: 'hook-async-crash',
+            txHash: '0xdead',
+            timedOut: true,
+          },
+        },
+      });
+
+      const next = vi.fn();
+      const middlewarePromise = middleware(req, res, next);
+      await middlewarePromise;
+
+      expect(hook).toHaveBeenCalledOnce();
+      expect(next).toHaveBeenCalledOnce();
+    });
+  });
+
+  describe('v0.3.0 — batchCanonicalKey in dispatcher', () => {
+    it('uses batchCanonicalKey when scheme is batch and claimTxHash is present', async () => {
+      const dispatchSpy = vi.fn();
+      const machine = createSettlementStateMachine();
+
+      const middleware = createRecoveryMiddleware({
+        profile: 'batch',
+        receiptProvider: fakeReceiptProvider(),
+        stateMachine: machine,
+        pollDispatcher: {
+          dispatchPoll: dispatchSpy,
+        },
+      });
+
+      const req = fakeReq();
+      const res = fakeRes({
+        locals: {
+          x402Settlement: {
+            settlementId: 'tx-batch-canon',
+            txHash: '0xdead',
+            claimTxHash: '0xclaim123',
+            timedOut: true,
+            scheme: 'batch',
+            payer: '0xpayer',
+            payTo: '0xpayto',
+            value: '500',
+            nonce: '1',
+          },
+        },
+      });
+
+      const next = vi.fn();
+      const middlewarePromise = middleware(req, res, next);
+      await middlewarePromise;
+
+      expect(dispatchSpy).toHaveBeenCalledOnce();
+      const expectedKey = batchCanonicalKey('0xpayer', '0xpayto', '1', '0xclaim123');
+      expect(dispatchSpy.mock.calls[0][0].canonicalKey).toBe(expectedKey);
+    });
+
+    it('uses canonicalKey when scheme is exact', async () => {
+      const dispatchSpy = vi.fn();
+      const machine = createSettlementStateMachine();
+
+      const middleware = createRecoveryMiddleware({
+        profile: 'datacenter',
+        receiptProvider: fakeReceiptProvider(),
+        stateMachine: machine,
+        pollDispatcher: {
+          dispatchPoll: dispatchSpy,
+        },
+      });
+
+      const req = fakeReq();
+      const res = fakeRes({
+        locals: {
+          x402Settlement: {
+            settlementId: 'tx-exact-canon',
+            txHash: '0xdead',
+            timedOut: true,
+            scheme: 'exact',
+            payer: '0xpayer',
+            payTo: '0xpayto',
+            value: '100',
+            nonce: '1',
+          },
+        },
+      });
+
+      const next = vi.fn();
+      const middlewarePromise = middleware(req, res, next);
+      await middlewarePromise;
+
+      expect(dispatchSpy).toHaveBeenCalledOnce();
+      const expectedKey = '0xpayer:0xpayto:100:1';
+      expect(dispatchSpy.mock.calls[0][0].canonicalKey).toBe(expectedKey);
+    });
+  });
+
+  describe('v0.3.0 — SettleConfirmed in irreversible states', () => {
+    it('leaves SettleConfirmed record unchanged on duplicate timeout', async () => {
+      const pollSpy = vi
+        .spyOn(pollerModule, 'pollUntilResolved')
+        .mockResolvedValue({ id: '', state: SettlementState.SettleConfirmed });
+
+      const machine = createSettlementStateMachine();
+      machine.create('tx-settle-confirmed', {
+        profileName: 'batch',
+        scheme: 'batch',
+        claimTxHash: '0xclaim',
+      });
+      machine.update('tx-settle-confirmed', { settleTxHash: '0xsettle' });
+      machine.transition('tx-settle-confirmed', SettlementState.ClaimPending);
+      machine.transition('tx-settle-confirmed', SettlementState.ClaimConfirmed);
+      machine.transition('tx-settle-confirmed', SettlementState.SettlePending);
+      machine.transition('tx-settle-confirmed', SettlementState.SettleConfirmed);
+
+      const middleware = createRecoveryMiddleware({
+        profile: 'batch',
+        receiptProvider: fakeReceiptProvider(),
+        stateMachine: machine,
+      });
+
+      const req = fakeReq();
+      const res = fakeRes({
+        locals: {
+          x402Settlement: {
+            settlementId: 'tx-settle-confirmed',
+            txHash: '0xdead',
+            timedOut: true,
+          },
+        },
+      });
+
+      const next = vi.fn();
+      const middlewarePromise = middleware(req, res, next);
+      await middlewarePromise;
+
+      const record = machine.get('tx-settle-confirmed');
+      expect(record!.state).toBe(SettlementState.SettleConfirmed);
+      expect(pollSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('v0.3.0 — scheme and claimTxHash passed to record', () => {
+    it('stores scheme and claimTxHash from context on record creation', async () => {
+      const machine = createSettlementStateMachine();
+
+      const middleware = createRecoveryMiddleware({
+        profile: 'batch',
+        receiptProvider: fakeReceiptProvider(),
+        stateMachine: machine,
+      });
+
+      const req = fakeReq();
+      const res = fakeRes({
+        locals: {
+          x402Settlement: {
+            settlementId: 'tx-batch-fields',
+            txHash: '0xdead',
+            claimTxHash: '0xclaimfield',
+            timedOut: true,
+            scheme: 'batch',
+            network: 'base-sepolia',
+            facilitatorResponse: { status: 402 },
+          },
+        },
+      });
+
+      const next = vi.fn();
+      const middlewarePromise = middleware(req, res, next);
+      await middlewarePromise;
+
+      const record = machine.get('tx-batch-fields');
+      expect(record).toBeDefined();
+      expect(record!.scheme).toBe('batch');
+      expect(record!.claimTxHash).toBe('0xclaimfield');
+      expect(record!.network).toBe('base-sepolia');
+      expect(record!.facilitatorResponse).toEqual({ status: 402 });
+    });
+
+    it('defaults scheme to exact when not provided', async () => {
+      const machine = createSettlementStateMachine();
+
+      const middleware = createRecoveryMiddleware({
+        profile: 'datacenter',
+        receiptProvider: fakeReceiptProvider(),
+        stateMachine: machine,
+      });
+
+      const req = fakeReq();
+      const res = fakeRes({
+        locals: {
+          x402Settlement: {
+            settlementId: 'tx-default-exact',
+            txHash: '0xdead',
+            timedOut: true,
+          },
+        },
+      });
+
+      const next = vi.fn();
+      const middlewarePromise = middleware(req, res, next);
+      await middlewarePromise;
+
+      const record = machine.get('tx-default-exact');
+      expect(record!.scheme).toBe('exact');
     });
   });
 });

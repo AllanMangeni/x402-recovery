@@ -1,10 +1,11 @@
 export { createSettlementStateMachine } from './state-machine';
-export type { StateMachine, SettlementRecord, CreateSettlementOptions } from './state-machine';
+export type { StateMachine, SettlementRecord, CreateSettlementOptions, SettlementRecordUpdate } from './state-machine';
 export {
   SettlementState,
   TERMINAL_STATES,
   PROFILES,
   canonicalKey,
+  batchCanonicalKey,
   defineProfile,
   normalizeValidBefore,
   type SettlementProfile,
@@ -14,6 +15,8 @@ export {
   type StateMachineOptions,
   type ReceiptProvider,
   type SettlementReceipt,
+  type AfterSettleTimeoutPayload,
+  type AfterSettleTimeoutHook,
 } from './types';
 export { createRecoveryMiddleware } from './middleware';
 export type { RecoveryConfig, PollDispatcher } from './middleware';
