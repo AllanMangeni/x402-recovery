@@ -85,10 +85,37 @@ test/
 
 ## Making changes
 
+### Branching model
+
+This project uses a simplified Git flow with three long-lived branches:
+
+- `main` — Production-ready code. Only merged from `develop` or hotfix branches.
+- `develop` — Integration branch for features and fixes. All feature/fix branches merge here first.
+- `feature/<short-description>` — New capability branched from `develop`.
+- `fix/<short-description>` — Bug fix branched from `develop`.
+
+### Workflow
+
+1. Create your branch from `develop`:
+   ```bash
+   git checkout develop
+   git pull origin develop
+   git checkout -b feature/your-feature-name
+   ```
+
+2. Make your changes, commit, and push:
+   ```bash
+   git push origin feature/your-feature-name
+   ```
+
+3. Open a pull request targeting `develop` (not `main`).
+
+4. Once approved and merged to `develop`, a maintainer will merge `develop` into `main` for release.
+
 ### Branch naming
 
 ```
-feat/<short-description>      New capability
+feature/<short-description>   New capability
 fix/<short-description>       Bug fix
 docs/<short-description>      Documentation only
 test/<short-description>      Tests only
@@ -181,7 +208,7 @@ Before opening a PR, verify:
 - `npm pack --dry-run` shows the expected files in the tarball
 - The PR description explains the motivation and links any related issues
 
-Branch protection on `main` requires the `Test (20)` CI check to pass and one approving review before merge.
+Branch protection on `develop` requires the `Test (20)` CI check to pass and one approving review before merge. Pull requests targeting `develop` should not target `main` directly.
 
 ---
 
@@ -191,6 +218,9 @@ Releases are published to npm from the maintainer's local environment using the 
 
 ```bash
 # From a clean clone of main
+git checkout main
+git pull origin main
+git merge develop
 npm ci
 npm run lint
 npm run build
@@ -202,6 +232,7 @@ npm pack --dry-run
 
 npm whoami          # confirm you are logged in to npm
 npm publish --access public
+git push origin main
 ```
 
 The `release.yml` GitHub Actions workflow exists for future use but requires an `NPM_TOKEN` secret to be configured in repository settings. The manual publish path above is the current release mechanism.
