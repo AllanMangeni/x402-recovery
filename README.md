@@ -5,54 +5,34 @@
 
 Late settlement recovery for x402 facilitator timeouts.
 
-## What this solves
-
-x402 separates verify and settle phases to keep latency low. When a facilitator
-times out or reports an uncertain failure, but the chain later confirms success,
-clients see a definite failure while the chain shows success.
-
-x402-recovery tracks that gap safely — the facilitator says timeout, the chain
-may later say success, and this package closes the loop.
-
-## What this does NOT solve
-
-This is not:
-
-- A full settlement indexer
-- A facilitator dedup cache
-- A queue system or job framework
-- A database persistence layer
-- A replacement for upstream x402 settlement verification
+When a facilitator times out but the chain later confirms success, clients see failure while the chain shows success. This package polls the chain and tracks the outcome through a state machine.
 
 ## States
 
 | State | Meaning |
 |---|---|
-| created | Recovery record exists, polling not yet started |
-| polling | Recovery is actively checking chain truth |
+| created | Record exists, polling not started |
+| polling | Actively checking chain truth |
 | confirmed | Chain confirmed within facilitator timeout |
 | confirmed_late | Chain confirmed after facilitator timeout |
-| unresolved | Recovery cannot safely classify the result |
+| unresolved | Cannot safely classify the result |
 | failed | Transaction reverted or recovery window ended |
 | failed_orphaned | Recovery window ended after validBefore; authorization expired |
 
-`ConfirmedLate` is distinct from `Confirmed`. That distinction is the key
-product value — it tells you the settlement succeeded, but later than expected.
-
-## Environment profiles
+## Profiles
 
 | Profile | Facilitator timeout | Poll interval | Max poll window | Confirmations | Indexer lag |
-|---|---:|---:|---:|---:|---:|
+|---|---|---:|---:|---:|---:|
 | datacenter | 5s | 2s | 30s | 1 | 0ms |
 | emerging_markets | 15s | 5s | 90s | 1 | 0ms |
 | batch | 30s | 8s | 48s | 1 | 10s |
 
-Custom profiles are created with `defineProfile`:
+Custom profiles:
 
 ```ts
 import { defineProfile } from 'x402-recovery';
 
-const mobileMoneyProfile = defineProfile({
+const profile = defineProfile({
   name: 'mobile_money',
   facilitatorTimeoutMs: 20_000,
   pollIntervalMs: 7_000,
@@ -67,75 +47,40 @@ const mobileMoneyProfile = defineProfile({
 npm install x402-recovery
 ```
 
-## `validBefore` unit convention
+## validBefore
 
-`validBefore` is stored internally as Unix milliseconds.
-
-If your upstream value is EIP-3009 Unix seconds, convert it before passing to
-x402-recovery:
+`validBefore` is stored as Unix milliseconds. If your upstream value is EIP-3009 Unix seconds, convert it first:
 
 ```ts
 import { normalizeValidBefore } from 'x402-recovery';
-
 const validBeforeMs = normalizeValidBefore(contractValidBefore);
 ```
 
-Never compare `Date.now()` directly against a seconds-based timestamp. The
-`normalizeValidBefore` helper detects the unit and normalizes accordingly.
-
 ## Settlement identity
-
-Two identity layers:
-
-### `settlementId`
-
-Local record ID. Useful for in-process state lookup, logs, and job IDs.
 
 ### `canonicalKey(payer, payTo, value, nonce)`
 
-Durable payment identity. Required for persistent stores, retries, dispatcher
-jobs, and idempotency.
-
 ```ts
 import { canonicalKey } from 'x402-recovery';
-
 const key = canonicalKey({
   payer: '0xSender',
   payTo: '0xRecipient',
-  value: '1000000000000000000',  // 1 ETH as decimal string
+  value: '1000000000000000000',
   nonce: '42',
 });
 // => "0xSender:0xRecipient:1000000000000000000:42"
 ```
 
-Rules:
-
-- Persistent stores must key records by `canonicalKey`
-- Dispatcher jobs must include `canonicalKey`
-- Middleware must not rely on `settlementId` alone for deduplication
-- `value` and `nonce` are strings by design — convert uint256 values upstream
+Use `canonicalKey` for persistence and idempotency. `value` and `nonce` are strings.
 
 ### `batchCanonicalKey(payer, payTo, nonce, claimTxHash)`
 
-Durable identity for batch settlements. Required when `scheme` is `'batch'`.
+For batch settlements (`scheme: 'batch'`):
 
 ```ts
 import { batchCanonicalKey } from 'x402-recovery';
-
-const key = batchCanonicalKey(
-  '0xSender',
-  '0xRecipient',
-  '0xa3f2...',
-  '0x60a960bd...',
-);
-// => "0xSender:0xRecipient:0xa3f2...:0x60a960bd..."
+const key = batchCanonicalKey('0xSender', '0xRecipient', '0xa3f2...', '0x60a960bd...');
 ```
-
-Rules:
-
-- Batch records must use `batchCanonicalKey`, not `canonicalKey`
-- `value` is not stable on the batch path — cumulative voucher totals can change across attempts
-- `claimTxHash` is immutable once mined and is the correct identity anchor
 
 ## Usage
 
@@ -146,13 +91,11 @@ import { createSettlementStateMachine, SettlementState } from 'x402-recovery';
 
 const machine = createSettlementStateMachine();
 
-const record = machine.create('tx-001', {
+machine.create('tx-001', {
   profileName: 'emerging_markets',
   txHash: '0xabc...',
   validBefore: Date.now() + 90_000,
 });
-
-console.log(record.state); // SettlementState.Created
 
 machine.transition('tx-001', SettlementState.Confirmed);
 ```
@@ -216,7 +159,6 @@ app.get('/pay', (req, res) => {
     validBefore: Date.now() + 90_000,
     timedOut: true,
   };
-
   res.status(202).json({ status: 'pending' });
 });
 
@@ -251,7 +193,6 @@ import type { PollDispatcher } from 'x402-recovery';
 
 const dispatcher: PollDispatcher = {
   dispatchPoll(input) {
-    // Enqueue to your own job queue, database, or message broker
     settlementQueue.add('recovery', input);
   },
 };
@@ -263,9 +204,6 @@ const middleware = createRecoveryMiddleware({
   pollDispatcher: dispatcher,
 });
 ```
-
-Dispatcher mode requires a shared `stateMachine`. An error is thrown at
-middleware creation if `pollDispatcher` is provided without `stateMachine`.
 
 ### Custom StateMachine
 
@@ -283,41 +221,23 @@ class RedisStateMachine implements StateMachine {
 
 ### `update()` for batch settlements
 
-The `StateMachine.update()` method patches an existing record in place. It is
-required for the batch path to write `settleTxHash` after `ClaimConfirmed`:
-
 ```ts
 await machine.update('settlement-1', { settleTxHash: '0x7c6a7fe8...' });
 ```
 
-Custom `StateMachine` implementations must implement `update()` for batch
-support. See the `SettlementRecordUpdate` type for allowed fields.
-
 ### `afterSettleTimeout` hook
 
-Fires once at the moment a facilitator timeout is detected — before polling
-begins. The payload carries the raw facilitator response and scheme metadata.
-
 ```ts
-const app = express();
-
 app.use(
   createRecoveryMiddleware({
     profile: 'batch',
     rpcUrl: process.env.BASE_RPC_URL!,
     afterSettleTimeout: async (payload) => {
-      console.log(payload.scheme);              // 'batch'
-      console.log(payload.facilitatorResponse); // raw facilitator error
+      console.log(payload.scheme, payload.facilitatorResponse);
     },
   }),
 );
 ```
-
-Firing semantics:
-
-- Middleware path: fires immediately at `timedOut === true`, before record creation
-- Direct poller path: fires at poller start
-- The two paths are mutually exclusive — the hook fires exactly once per timeout event
 
 ### Beav3r pre-execution guard
 
@@ -339,188 +259,33 @@ const result = await guardedPayment({
   beav3rAccountId: 'your-account-id',
 });
 
-console.log(result.authorized);       // true
-console.log(result.settlementState);  // SettlementState.Confirmed
+console.log(result.authorized, result.settlementState);
 ```
 
-The Beav3r adapter targets Base Sepolia only. Install it as an optional
-dependency:
+Install the optional peer:
 
 ```bash
 npm install @beav3r/sdk
 ```
 
-## Reconciliation compatibility
+## Production
 
-The `canonicalKey` four-tuple `(payer, payTo, value, nonce)` aligns with the
-[x402trace](https://github.com/fardinvahdat/x402trace) JSONL schema:
+- The default state machine is in-memory and per-process. Provide a persistent `StateMachine` for production.
+- For horizontal scaling, all workers must share the same `StateMachine`.
+- Dispatcher mode requires shared state. The package does not provide a queue.
+- If the facilitator response has no `txHash`, the settlement is recorded as `unresolved` and not polled.
+- `value` and `nonce` are strings by design.
+- Use `canonicalKey` as the durable identity for retries and persistence.
 
-| x402-recovery | x402trace event | field |
-|---|---|---|
-| `payer` | `exchange.payment` | `payload.authorization.from` |
-| `payer` | `chain.transfer` | `from` |
-| `payer` | `reconcile.result` | `pending.payer` |
-| `payTo` | `exchange.payment` | `payload.authorization.to` |
-| `payTo` | `chain.transfer` | `to` |
-| `payTo` | `reconcile.result` | `pending.payTo` |
-| `value` | `exchange.payment` | `payload.authorization.value` |
-| `value` | `chain.transfer` | `value` |
-| `value` | `reconcile.result` | `pending.value` |
-| `nonce` | `exchange.payment` | `payload.authorization.nonce` |
-| `nonce` | `chain.transfer` | `authorizationNonce` |
-| `nonce` | `reconcile.result` | `pending.nonce` |
-
-`reconcile.result.kind` maps to `SettlementState` as follows:
-
-| kind | SettlementState |
-|---|---|
-| `settled_on_chain` | `Confirmed` or `ConfirmedLate` |
-| `not_settled` | `FailedOrphaned` |
-| `value_mismatch` | `FailedOrphaned` |
-| `recipient_mismatch` | `FailedOrphaned` |
-
-## Production limitations
-
-The default state machine is in-memory and per-process. It is not durable.
-
-If the process restarts, in-flight polling is lost.
-
-For production reliability, provide a persistent `StateMachine` implementation.
-
-For horizontal scaling, all web workers and poll workers must share the same
-`StateMachine`.
-
-Dispatcher mode requires shared state. The package does not provide a queue.
-
-x402-recovery treats `validBefore` as the recovery TTL.
-
-By default, confirmation behavior depends on `requiredConfirmations`, which
-defaults to 1.
-
-A successful receipt with 1 confirmation may be too weak for high-value
-transfers. Increase `requiredConfirmations` for those flows.
-
-If the facilitator response has no `txHash`, x402-recovery records the
-settlement as `Unresolved` and does not poll.
-
-`value` and `nonce` are strings by design. Convert on-chain uint256 values to
-strings upstream.
-
-`canonicalKey(payer, payTo, value, nonce)` is the durable identity for retries
-and persistence.
-
-## Project structure
-
-```text
-src/
-  types.ts         SettlementState, SettlementProfile, ProfileName, PROFILES,
-                   canonicalKey, defineProfile, normalizeValidBefore,
-                   ReceiptProvider, SettlementReceipt
-  state-machine.ts In-memory state machine (async-capable interface)
-  poller.ts        ReceiptProvider-based polling loop
-  middleware.ts    Express middleware with dispatcher support
-  index.ts         Public API exports
-  adapters/
-    viem.ts        Viem receipt provider adapter
-    beav3r.ts      Beav3r pre-execution guard adapter
-    index.ts       Adapter re-exports
-test/
-  state-machine.test.ts
-  poller.test.ts
-  middleware.test.ts
-  beav3r-guard.test.ts
-```
-
-## Migration from v0.1.x
-
-### Profile names changed
-
-Region-specific built-in profiles (`east_africa`, `west_africa`,
-`east_africa_mpesa`, `west_africa_momo`) have been removed from exported
-`PROFILES`.
-
-Replace with custom `defineProfile(...)` calls:
-
-```ts
-const eastAfricaMpesaLike = defineProfile({
-  name: 'east_africa_mpesa_like',
-  facilitatorTimeoutMs: 20_000,
-  pollIntervalMs: 7_000,
-  maxPollWindowMs: 120_000,
-  requiredConfirmations: 1,
-});
-```
-
-### SettlementState.Pending renamed to SettlementState.Created
-
-Update any code that references `SettlementState.Pending` to
-`SettlementState.Created`.
-
-### Poller now uses ReceiptProvider
-
-`pollUntilResolved` no longer accepts `client: PublicClient`. Pass a
-`ReceiptProvider` instead:
-
-```ts
-import { createViemReceiptProvider } from 'x402-recovery';
-const receiptProvider = createViemReceiptProvider(client);
-```
-
-### Dispatcher requires shared stateMachine
-
-If you use `pollDispatcher`, you must also provide `stateMachine`. An error is
-thrown at middleware creation otherwise.
-
-### validBefore unit convention
-
-`validBefore` is now normalized to Unix milliseconds internally. Use
-`normalizeValidBefore` if your values come from EIP-3009 seconds.
-
-## Migration from v0.2.x
-
-### Batch settlements
-
-If you handle batch-settlement flows, use `batchCanonicalKey` instead of
-`canonicalKey` for record identity. Use `machine.update()` to write
-`settleTxHash` after `ClaimConfirmed`.
-
-Custom `StateMachine` implementations must add `update()` to remain compatible.
-
-### ProfileName
-
-If you switch exhaustively on `ProfileName`, add a handler for `'batch'`.
-
-### SettlementContext fields
-
-New optional fields are available on `SettlementContext`:
-
-- `scheme` — `'exact'` (default) or `'batch'`
-- `claimTxHash` — known at record creation for batch
-- `settleTxHash` — populated post-`ClaimConfirmed` via `update()`
-- `network` — caller-supplied, no default
-- `facilitatorResponse` — raw facilitator error payload
-
-### `timedOut` is now optional
-
-`SettlementContext.timedOut` is now optional (`boolean | undefined`). The
-middleware still treats a falsy or absent `timedOut` as "no timeout detected"
-and returns early.
-
-## Related reading
+## Related
 
 - [NDSS 2026 Two-Phase Gap poster](https://www.ndss-symposium.org/wp-content/uploads/ndss26-poster-51.pdf)
 - [x402 Foundation discussion](https://github.com/x402-foundation/x402/issues/2294)
-- [x402-migration-architecture-example](https://github.com/AllanMangeni/x402-migration-architecture-example)
 
 ## Contributing
 
-Small, focused PRs are welcome. Keep changes scoped to docs, adapter examples,
-or tests.
+See [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 ## License
 
 Apache 2.0
-
-## Author
-
-Allan Mang'eni
