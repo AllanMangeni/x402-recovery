@@ -1,5 +1,11 @@
 # x402-recovery
 
+## [0.3.1] - 2026-06-02
+
+### Changed
+
+- Revamped documentation for clarity and ease of use
+
 ## [0.3.0] - 2026-05-27
 
 ### Added
