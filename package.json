@@ -1,6 +1,6 @@
 {
   "name": "x402-recovery",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Late settlement recovery for x402 facilitator timeouts.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
