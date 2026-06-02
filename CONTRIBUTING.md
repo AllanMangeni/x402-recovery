@@ -1,204 +1,118 @@
 # Contributing to x402-recovery
 
-Thank you for your interest in contributing. This document covers everything you need to get from a fresh clone to a merged pull request.
-
-## Table of contents
-
-- [Project overview](#project-overview)
-- [Development setup](#development-setup)
-- [Repository structure](#repository-structure)
-- [Making changes](#making-changes)
-- [Tests](#tests)
-- [Commit and PR conventions](#commit-and-pr-conventions)
-- [Release process](#release-process)
-- [Design decisions](#design-decisions)
-- [Areas open for contribution](#areas-open-for-contribution)
-- [Code of conduct](#code-of-conduct)
-
----
-
-## Project overview
-
-x402-recovery is a TypeScript middleware library that closes the Two-Phase Gap in the [x402](https://x402.org/) payment protocol. When a facilitator times out but the on-chain transaction later confirms, consumers and providers can disagree on settlement state. This library tracks that state through a seven-state machine, polls the chain until resolution, and exposes an Express middleware that triggers recovery automatically when a facilitator response times out.
-
-The library is designed to be small, dependency-light, and composable. The runtime dependency surface is a single package (`viem`). Everything else is a peer or dev dependency.
-
----
-
 ## Development setup
 
-You need Node.js 20 or later and npm 10 or later.
+Node.js 20+ and npm 10+.
 
 ```bash
 git clone https://github.com/AllanMangeni/x402-recovery.git
 cd x402-recovery
 npm ci
+npm run lint
+npm run build
+npm test
 ```
 
-Verify the setup:
-
-```bash
-npm run lint    # TypeScript type check (tsc --noEmit)
-npm run build   # Compile to dist/
-npm test        # Run the full test suite with vitest
-```
-
-All three should complete with zero errors before you start making changes.
-
-### Environment variables
-
-The only environment variable used at runtime is `BASE_RPC_URL`. The test suite mocks all RPC calls, so you do not need a live RPC endpoint to run tests.
-
----
+`BASE_RPC_URL` is the only runtime environment variable. Tests mock all RPC calls.
 
 ## Repository structure
 
 ```text
 src/
-  types.ts              Enums, interfaces, PROFILES, canonicalKey
-  state-machine.ts      In-memory settlement state machine
-  poller.ts             viem-based RPC polling loop
-  middleware.ts         Express middleware entry point
+  types.ts         Enums, interfaces, PROFILES, canonicalKey
+  state-machine.ts In-memory settlement state machine
+  poller.ts        ReceiptProvider-based polling loop
+  middleware.ts    Express middleware with dispatcher support
+  index.ts         Public API exports
   adapters/
-    beav3r.ts           Beav3r pre-execution guard adapter
-    index.ts            Adapter re-exports
-  beav3r-shim.d.ts      Ambient type declarations for @beav3r/sdk (optional peer)
-  index.ts              Public API re-exports
+    viem.ts        Viem receipt provider adapter
+    beav3r.ts      Beav3r pre-execution guard adapter
+    index.ts       Adapter re-exports
 
 test/
-  state-machine.test.ts State machine unit tests (12 tests)
-  poller.test.ts        Poller unit tests (7 tests)
-  middleware.test.ts    Middleware unit + concurrency tests (9 tests)
-  beav3r-guard.test.ts  Beav3r guard unit tests (5 tests)
-
-.github/
-  workflows/
-    ci.yml              Node 20 + 22 matrix, lint, build, test
-    release.yml         Manual dispatch publish to npm
-    security.yml        npm audit + TruffleHog, runs weekly Monday 03:00 UTC
-  dependabot.yml        Weekly npm dependency updates
-  CODEOWNERS            All files: @AllanMangeni; src/adapters/: @AllanMangeni
-  PULL_REQUEST_TEMPLATE.md
+  state-machine.test.ts
+  poller.test.ts
+  middleware.test.ts
+  beav3r-guard.test.ts
 ```
 
----
+## Workflow
 
-## Making changes
-
-### Branching model
-
-This project uses a simplified Git flow with three long-lived branches:
-
-- `main` — Production-ready code. Only merged from `develop` or hotfix branches.
-- `develop` — Integration branch for features and fixes. All feature/fix branches merge here first.
-- `feature/<short-description>` — New capability branched from `develop`.
-- `fix/<short-description>` — Bug fix branched from `develop`.
-
-### Workflow
-
-1. Create your branch from `develop`:
+1. Branch from `develop`:
    ```bash
    git checkout develop
    git pull origin develop
    git checkout -b feature/your-feature-name
    ```
+2. Make changes, push, and open a PR targeting `develop`.
+3. Once approved and merged to `develop`, a maintainer merges `develop` into `main` for release.
 
-2. Make your changes, commit, and push:
-   ```bash
-   git push origin feature/your-feature-name
-   ```
+Branch naming:
 
-3. Open a pull request targeting `develop` (not `main`).
+- `feature/<short-description>` — new capability
+- `fix/<short-description>` — bug fix
+- `docs/<short-description>` — documentation
+- `test/<short-description>` — tests only
+- `chore/<short-description>` — tooling, deps, config
 
-4. Once approved and merged to `develop`, a maintainer will merge `develop` into `main` for release.
+Keep PRs focused. A profile addition should not also refactor the poller.
 
-### Branch naming
+## Adding a profile
 
-```
-feature/<short-description>   New capability
-fix/<short-description>       Bug fix
-docs/<short-description>      Documentation only
-test/<short-description>      Tests only
-chore/<short-description>     Tooling, deps, config
-```
-
-### Scope
-
-Keep pull requests focused. A PR that adds a new profile should not also refactor the poller. Smaller PRs are reviewed faster and are easier to revert if something goes wrong.
-
-### Adding a new environment profile
-
-Profiles live in `src/types.ts` inside the `PROFILES` constant. Each profile has three fields:
+Profiles live in `src/types.ts` inside the `PROFILES` constant:
 
 ```ts
 {
-  name: string;              // matches the key in PROFILES
+  name: string;
   facilitatorTimeoutMs: number;
   pollIntervalMs: number;
   maxPollWindowMs: number;
 }
 ```
 
-When adding a profile:
-
+Steps:
 1. Add the entry to `PROFILES` in `src/types.ts`.
 2. Update the profile table in `README.md`.
 3. Add at least one test in `test/state-machine.test.ts` that exercises the profile name.
-4. If the profile targets a specific network or corridor (for example, a Southeast Asia mobile profile), document the latency assumptions in a comment next to the profile entry.
+4. If the profile targets a specific corridor, document the latency assumptions in a comment next to the entry.
 
-Custom profiles can also be defined inline with `defineProfile()` and passed directly to `createRecoveryMiddleware`, `machine.create()`, or `pollUntilResolved` without adding a named entry to `PROFILES`. Named profile contributions are still welcome for well-documented corridors.
+You can also define profiles inline with `defineProfile()` without adding a named entry.
 
-### Adding a new adapter
+## Adding an adapter
 
-Adapters live under `src/adapters/`. They connect x402-recovery to external payment or agent execution platforms. An adapter should:
+Adapters live under `src/adapters/`:
 
-- Have a corresponding test file under `test/`.
-- Use dynamic imports for optional peer dependencies so the library does not break when the peer is absent.
-- Export from `src/adapters/index.ts` so it is available from the package root.
+- Add a test file under `test/`.
+- Use dynamic imports for optional peer dependencies.
+- Export from `src/adapters/index.ts`.
 - Document the peer dependency in `README.md` with an `npm install` instruction.
 
----
-
 ## Tests
-
-The test suite uses [vitest](https://vitest.dev/). All RPC calls are mocked. There is no network access in tests.
 
 ```bash
 npm test                       # Run all tests
 npx vitest run --reporter=verbose  # Verbose output
 ```
 
-### What to test
-
 - Every new exported function needs at least one test.
 - State transitions should assert both the resulting state and the `updatedAt` timestamp.
-- Adapter tests must cover the case where the optional peer dependency is absent (the guard should degrade gracefully).
-- New profiles do not need dedicated poller tests, but the profile name must appear in at least one test that passes it as configuration.
-
-### Coverage
-
-Coverage tooling is not yet configured as a dev dependency. If you add it, use `@vitest/coverage-v8` and document the threshold in this file.
-
----
+- Adapter tests must cover the case where the optional peer dependency is absent.
+- New profiles do not need dedicated poller tests, but the profile name must appear in at least one test.
 
 ## Commit and PR conventions
 
-This project follows [Conventional Commits](https://www.conventionalcommits.org/).
-
-Common prefixes:
+Conventional Commits:
 
 | Prefix | Use for |
 |---|---|
 | `feat:` | New exported functionality |
-| `fix:` | Bug fix in existing behaviour |
+| `fix:` | Bug fix |
 | `docs:` | README, CONTRIBUTING, inline comments |
-| `test:` | New or updated tests only |
+| `test:` | Tests only |
 | `chore:` | Dependencies, build config, CI |
 | `refactor:` | Internal restructure with no API change |
 
-The PR title should follow the same convention. The first commit message is used in the changelog, so write it as a complete sentence describing the change from a consumer perspective.
-
-### PR checklist
+PR title follows the same convention. The first commit message is used in the changelog, so write it as a complete sentence from a consumer perspective.
 
 Before opening a PR, verify:
 
@@ -206,18 +120,12 @@ Before opening a PR, verify:
 - `npm run build` passes
 - `npm test` passes
 - `npm pack --dry-run` shows the expected files in the tarball
-- The PR description explains the motivation and links any related issues
 
-Branch protection on `develop` requires the `Test (20)` CI check to pass and one approving review before merge. Pull requests targeting `develop` should not target `main` directly.
-
----
+Branch protection on `develop` requires the `Test (20)` CI check and one approving review.
 
 ## Release process
 
-Releases are published to npm from the maintainer's local environment using the following sequence:
-
 ```bash
-# From a clean clone of main
 git checkout main
 git pull origin main
 git merge develop
@@ -227,65 +135,52 @@ npm run build
 npm test
 npm audit --audit-level=high
 npm pack --dry-run
-
-# Confirm dist/beav3r-shim.d.ts appears in the tarball output
-
-npm whoami          # confirm you are logged in to npm
+npm whoami
 npm publish --access public
 git push origin main
 ```
 
-The `release.yml` GitHub Actions workflow exists for future use but requires an `NPM_TOKEN` secret to be configured in repository settings. The manual publish path above is the current release mechanism.
+The `release.yml` workflow exists for future use but requires an `NPM_TOKEN` secret.
 
 ### Versioning
 
-This project follows [semver](https://semver.org/).
+Semver:
 
-- Patch: bug fixes, documentation, new profiles
-- Minor: new adapters, new exported functions, non-breaking API additions
-- Major: breaking changes to the existing public API
+- Patch: bug fixes, docs, new profiles
+- Minor: new adapters, new exported functions
+- Major: breaking API changes
 
-Update `package.json` version and `CHANGELOG.md` before publishing. The changelog entry should describe the change from a consumer perspective, not an internal implementation perspective.
-
----
+Update `package.json` version and `CHANGELOG.md` before publishing.
 
 ## Design decisions
 
-Understanding the reasoning behind the current design helps you make consistent contributions.
-
 ### In-memory state only
 
-The state machine holds all settlement records in process memory. This is intentional for v0.1. The library is a middleware primitive, not a persistence layer. Consumers who need durability should wrap the state machine with their own storage adapter and use `canonicalKey` as the stable deduplication key across restarts.
+The state machine is in-memory by design. It is a middleware primitive, not a persistence layer. Wrap it with your own storage adapter and use `canonicalKey` as the stable deduplication key.
 
 ### Fire-and-forget poller
 
-The poller runs as a detached async task. It does not block the HTTP response. For long poll windows (over 60 seconds), the recommendation is to move polling to a job queue. The library intentionally does not bundle a queue implementation to avoid runtime dependency bloat.
+The poller runs as a detached async task. It does not block the HTTP response. For long poll windows, move polling to a job queue. The library does not bundle a queue implementation.
 
 ### Profiles, not runtime configuration
 
-Poll intervals and timeouts are exposed through named profiles for observability. `defineProfile()` lets developers pass custom timing inline when a named profile would be premature, while named profiles remain the recommended path for well-documented corridors. If you need a configuration that does not fit an existing profile, either define it inline with `defineProfile()` or add a named profile contribution.
+Poll intervals and timeouts are exposed through named profiles for observability. `defineProfile()` lets you pass custom timing inline. If you need a configuration that does not fit an existing profile, either define it inline or add a named profile contribution.
 
 ### Beav3r adapter as optional peer
 
-`@beav3r/sdk` is loaded dynamically so the entire package still imports cleanly in environments where Beav3r is not installed. If you add another optional adapter, follow the same pattern: dynamic import inside the adapter function, graceful degradation to `authorized: false` with an install hint if the import fails.
+`@beav3r/sdk` is loaded dynamically so the package imports cleanly when Beav3r is not installed. If you add another optional adapter, follow the same pattern: dynamic import inside the adapter function, graceful degradation if the import fails.
 
----
+## Open contribution areas
 
-## Areas open for contribution
-
-These are known gaps that would make good first contributions:
-
-- **Additional corridor profiles.** With `defineProfile`, one-off custom timing configurations do not require a named profile contribution. Named profiles are still valuable for corridors with documented latency baselines that are likely to be reused — Southeast Asia (Philippines GCash, Indonesia GoPay), Latin America (Brazil PIX-adjacent), and South Asia corridors would benefit from named profiles with documented latency baselines.
-- **Vitest coverage setup.** Add `@vitest/coverage-v8` as a dev dependency and configure a threshold in `vitest.config.ts`.
-- **Persistence adapter example.** A reference implementation showing how to back the state machine with Redis or a Postgres table, using `canonicalKey` as the row key.
-- **OpenTelemetry trace example.** A documented `onTransition` hook implementation that emits spans to an OTLP collector.
-- **ESM build target.** The current build is CJS-only. An ESM output alongside the existing CJS would improve compatibility with modern bundler setups.
-- **TruffleHog push-event fix.** `security.yml` currently uses `github.event.repository.default_branch` as the base for push events, which produces an empty diff. The correct base for push events is `github.event.before`.
-
----
+- Additional corridor profiles with documented latency baselines.
+- Vitest coverage setup (`@vitest/coverage-v8`).
+- Persistence adapter example (Redis or Postgres backed state machine using `canonicalKey`).
+- OpenTelemetry trace example (documented `onTransition` hook emitting spans).
+- ESM build target alongside the existing CJS output.
+- TruffleHog push-event fix in `security.yml` (`github.event.before` as the base).
 
 ## Code of conduct
 
-Be direct and technical in code review. Critique the code, not the contributor. Respond to review comments in a timely way. If a discussion is going in circles, move it to a GitHub issue or a direct conversation rather than blocking a PR indefinitely.
+Critique the code, not the contributor. Respond to review comments in a timely way. If a discussion is going in circles, move it to an issue or a direct conversation rather than blocking a PR indefinitely.
 
-Maintainers reserve the right to close PRs that are out of scope, do not follow the contribution guidelines after feedback, or have been inactive for 30 days.
+Maintainers reserve the right to close PRs that are out of scope, do not follow the guidelines after feedback, or have been inactive for 30 days.
