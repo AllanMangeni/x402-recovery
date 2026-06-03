@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createRecoveryHook, RecoveryPlugin, SettlementFailureContext } from '../src/hooks';
 import { SettlementState, PROFILES, ReceiptProvider, SettlementReceipt } from '../src/types';
 import { createSettlementStateMachine, StateMachine } from '../src/state-machine';
+import { RecoveryError } from '../src/errors';
 import * as pollerModule from '../src/poller';
 
 function fakeReceiptProvider(receipt?: SettlementReceipt): ReceiptProvider {
@@ -36,7 +37,7 @@ describe('createRecoveryHook', () => {
       createRecoveryHook({
         profile: 'datacenter',
       }),
-    ).toThrow('requires one of receiptProvider, client, or rpcUrl');
+    ).toThrow(new RecoveryError('hook_config_incomplete', 400, 'RecoveryHookConfig requires one of receiptProvider, client, or rpcUrl'));
   });
 
   it('creates a recovery record from x402 v2 context and starts polling', async () => {
@@ -405,7 +406,7 @@ describe('createRecoveryHook', () => {
     await hook(context);
 
     expect(consoleSpy).toHaveBeenCalledWith(
-      expect.objectContaining({ event: 'recovery.hook.create.error' }),
+      expect.objectContaining({ code: 'settlement_create_failed' }),
     );
 
     consoleSpy.mockRestore();
@@ -435,7 +436,7 @@ describe('createRecoveryHook', () => {
     await vi.waitFor(
       () => {
         expect(consoleSpy).toHaveBeenCalledWith(
-          expect.objectContaining({ event: 'recovery.hook.poller.error' }),
+          expect.objectContaining({ code: 'poller_failed' }),
         );
         const record = machine.get('0xpollerFail');
         expect(record?.state).toBe(SettlementState.Unresolved);

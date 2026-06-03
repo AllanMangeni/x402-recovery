@@ -318,7 +318,7 @@ describe('pollUntilResolved', () => {
         receiptProvider,
         now: () => Date.now(),
       }),
-    ).rejects.toThrow('Settlement nonexistent not found');
+    ).rejects.toThrow(expect.objectContaining({ code: 'settlement_not_found' }));
   });
 
   it('continues polling when confirmations insufficient', async () => {
