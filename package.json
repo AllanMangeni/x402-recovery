@@ -16,7 +16,8 @@
     "build": "rm -rf dist && tsc && tsc -p tsconfig.esm.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "prepublishOnly": "npm run lint && npm run build && npm test"
   },
   "keywords": [
     "x402",
