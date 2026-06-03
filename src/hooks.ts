@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { PublicClient } from 'viem';
 import { createPublicClient, http } from 'viem';
 import { createSettlementStateMachine, StateMachine, SettlementRecord } from './state-machine';
@@ -8,10 +9,12 @@ import {
   ProfileName,
   PROFILES,
   ReceiptProvider,
+  TERMINAL_STATES,
   normalizeValidBefore,
   AfterSettleTimeoutHook,
 } from './types';
 import { createViemReceiptProvider } from './adapters/viem';
+import { RecoveryError } from './errors';
 
 /**
  * Duck-typed context received from x402 v2 onSettleFailure / onUncertainSettlement hooks.
@@ -48,21 +51,15 @@ export interface RecoveryHookConfig {
   afterSettleTimeout?: AfterSettleTimeoutHook;
 }
 
-function logError(message: string, details: Record<string, unknown>): void {
+function logError(err: RecoveryError): void {
   console.error({
-    event: message,
-    ...details,
+    event: err.code,
+    ...err.toJSON(),
     timestamp: Date.now(),
   });
 }
 
-const TERMINAL_STATES: ReadonlySet<SettlementState> = new Set([
-  SettlementState.Confirmed,
-  SettlementState.ConfirmedLate,
-  SettlementState.Failed,
-  SettlementState.FailedOrphaned,
-  SettlementState.SettleConfirmed,
-]);
+
 
 async function getOrCreateRecord(
   machine: StateMachine,
@@ -102,7 +99,7 @@ export function createRecoveryHook(config: RecoveryHookConfig) {
     const client = createPublicClient({ transport: http(config.rpcUrl) });
     receiptProvider = createViemReceiptProvider(client);
   } else {
-    throw new Error('RecoveryHookConfig requires one of receiptProvider, client, or rpcUrl');
+    throw new RecoveryError('hook_config_incomplete', 400, 'RecoveryHookConfig requires one of receiptProvider, client, or rpcUrl');
   }
 
   const machine = config.stateMachine ?? createSettlementStateMachine();
@@ -111,7 +108,7 @@ export function createRecoveryHook(config: RecoveryHookConfig) {
     const settlementId =
       context.result?.transaction?.hash ??
       context.paymentPayload?.transaction?.hash ??
-      `recovery-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+      `recovery-${Date.now()}-${randomUUID().slice(0, 8)}`;
 
     const txHash = (
       context.result?.transaction?.hash ?? context.paymentPayload?.transaction?.hash
@@ -145,7 +142,8 @@ export function createRecoveryHook(config: RecoveryHookConfig) {
         scheme: 'exact',
       });
     } catch (err) {
-      logError('recovery.hook.create.error', { settlementId, error: String(err) });
+      const error = err instanceof RecoveryError ? err : new RecoveryError('settlement_create_failed', 500, `Failed to create settlement record: ${settlementId}`, { settlementId, cause: String(err) });
+      logError(error);
       return;
     }
 
@@ -185,10 +183,8 @@ export function createRecoveryHook(config: RecoveryHookConfig) {
       machine,
       receiptProvider,
     }).catch((err) => {
-      logError('recovery.hook.poller.error', {
-        settlementId,
-        error: String(err),
-      });
+      const error = err instanceof RecoveryError ? err : new RecoveryError('poller_failed', 500, `Poller failed for settlement: ${settlementId}`, { settlementId, cause: String(err) });
+      logError(error);
       try {
         machine.transition(settlementId, SettlementState.Unresolved);
       } catch {}
