@@ -449,6 +449,13 @@ describe('createRecoveryHook', () => {
 });
 
 describe('RecoveryPlugin', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
   it('returns an object with onSettleFailure and onUncertainSettlement', () => {
     const plugin = RecoveryPlugin({
       profile: 'datacenter',
