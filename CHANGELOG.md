@@ -1,5 +1,25 @@
 # x402-recovery
 
+## [0.4.0] - 2026-06-02
+
+### Added
+
+- `createRecoveryHook()` — adapter for x402 v2 lifecycle hooks (`onSettleFailure`, `onUncertainSettlement`)
+- `RecoveryPlugin()` — convenience wrapper returning both hook handlers
+- Dual ESM + CJS build output
+- `sideEffects: false` for improved tree-shaking
+
+### Removed
+
+- **Beav3r adapter** (`guardedPayment`, `BEAV3R_CONTRACTS`) — was testnet-only and mixed pre-execution authorisation with post-settlement recovery. Users who need both should call Beav3r and x402-recovery separately.
+- **Express middleware** (`createRecoveryMiddleware`, `PollDispatcher`, `RecoveryConfig`) — superseded by x402 v2 lifecycle hooks. Legacy Express stacks can replicate the pattern in five lines using `createRecoveryHook()`.
+- `express` peer dependency
+
+### Changed
+
+- `viem` is now the only runtime dependency
+- Package exports updated to support both ESM (`import`) and CJS (`require`)
+
 ## [0.3.1] - 2026-06-02
 
 ### Changed
