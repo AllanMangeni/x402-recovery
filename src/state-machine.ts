@@ -1,4 +1,5 @@
 import { SettlementState, SettlementProfile, PROFILES, ProfileName, StateMachineOptions } from './types';
+import { RecoveryError } from './errors';
 
 export interface SettlementRecord {
   id: string;
@@ -81,7 +82,7 @@ export function createSettlementStateMachine(options?: StateMachineOptions): Sta
   function resolveProfile(profileName: ProfileName): SettlementProfile {
     const profile = PROFILES[profileName];
     if (!profile) {
-      throw new Error(`Unknown settlement profile: ${profileName}`);
+      throw new RecoveryError('profile_unknown', 400, `Unknown settlement profile: ${profileName}`, { profileName });
     }
     return profile;
   }
@@ -100,8 +101,12 @@ export function createSettlementStateMachine(options?: StateMachineOptions): Sta
     if (!options?.onTransition) return;
 
     try {
-      Promise.resolve(options.onTransition(event)).catch(() => {});
-    } catch {}
+      Promise.resolve(options.onTransition(event)).catch((err) => {
+        console.error({ event: 'transition.callback.error', error: String(err), settlementId: event.settlementId });
+      });
+    } catch (err) {
+      console.error({ event: 'transition.callback.error', error: String(err), settlementId: event.settlementId });
+    }
   }
 
   return {
@@ -110,7 +115,7 @@ export function createSettlementStateMachine(options?: StateMachineOptions): Sta
       opts?: CreateSettlementOptions,
     ): SettlementRecord {
       if (records.has(id)) {
-        throw new Error(`Settlement ${id} already exists`);
+        throw new RecoveryError('settlement_already_exists', 409, `Settlement ${id} already exists`, { settlementId: id });
       }
       const profile = opts?.profile ?? resolveProfile(opts?.profileName ?? 'datacenter');
       const now = Date.now();
@@ -145,7 +150,7 @@ export function createSettlementStateMachine(options?: StateMachineOptions): Sta
     transition(id: string, newState: SettlementState): SettlementRecord {
       const record = records.get(id);
       if (!record) {
-        throw new Error(`Settlement ${id} not found`);
+        throw new RecoveryError('settlement_not_found', 404, `Settlement ${id} not found`, { settlementId: id });
       }
       const fromState = record.state;
       record.state = newState;
@@ -170,7 +175,7 @@ export function createSettlementStateMachine(options?: StateMachineOptions): Sta
     update(id: string, fields: SettlementRecordUpdate): SettlementRecord {
       const record = records.get(id);
       if (!record) {
-        throw new Error(`Settlement ${id} not found`);
+        throw new RecoveryError('settlement_not_found', 404, `Settlement ${id} not found`, { settlementId: id });
       }
       if (fields.txHash !== undefined) record.txHash = fields.txHash;
       if (fields.claimTxHash !== undefined) record.claimTxHash = fields.claimTxHash;

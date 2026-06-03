@@ -84,6 +84,35 @@ const key = batchCanonicalKey('0xSender', '0xRecipient', '0xa3f2...', '0x60a960b
 
 ## Usage
 
+### x402 v2 lifecycle hooks (recommended)
+
+```ts
+import { x402ResourceServer } from '@x402/core';
+import { RecoveryPlugin } from 'x402-recovery';
+
+const server = new x402ResourceServer(facilitatorClient);
+
+const recovery = RecoveryPlugin({
+  profile: 'datacenter',
+  rpcUrl: process.env.BASE_RPC_URL,
+});
+
+server.onSettleFailure(recovery.onSettleFailure);
+server.onUncertainSettlement(recovery.onUncertainSettlement);
+```
+
+Or with a shared `StateMachine`:
+
+```ts
+import { createSettlementStateMachine, createRecoveryHook } from 'x402-recovery';
+
+const machine = createSettlementStateMachine({ onTransition: logToTelemetry });
+
+server.onSettleFailure(
+  createRecoveryHook({ profile: 'datacenter', rpcUrl: '...', stateMachine: machine }),
+);
+```
+
 ### State machine
 
 ```ts
@@ -137,34 +166,6 @@ const result = await pollUntilResolved({
 console.log(result.state);
 ```
 
-### Express middleware
-
-```ts
-import express from 'express';
-import { createRecoveryMiddleware } from 'x402-recovery';
-
-const app = express();
-
-app.use(
-  createRecoveryMiddleware({
-    profile: 'emerging_markets',
-    rpcUrl: process.env.BASE_RPC_URL!,
-  }),
-);
-
-app.get('/pay', (req, res) => {
-  res.locals.x402Settlement = {
-    settlementId: req.headers['x-request-id'] as string,
-    txHash: '0x...',
-    validBefore: Date.now() + 90_000,
-    timedOut: true,
-  };
-  res.status(202).json({ status: 'pending' });
-});
-
-app.listen(3000);
-```
-
 ### Custom ReceiptProvider
 
 ```ts
@@ -184,25 +185,6 @@ function createWsReceiptProvider(wsUrl: string): ReceiptProvider {
     },
   };
 }
-```
-
-### Custom PollDispatcher
-
-```ts
-import type { PollDispatcher } from 'x402-recovery';
-
-const dispatcher: PollDispatcher = {
-  dispatchPoll(input) {
-    settlementQueue.add('recovery', input);
-  },
-};
-
-const middleware = createRecoveryMiddleware({
-  profile: 'datacenter',
-  rpcUrl: process.env.BASE_RPC_URL,
-  stateMachine: sharedStateMachine,
-  pollDispatcher: dispatcher,
-});
 ```
 
 ### Custom StateMachine
@@ -225,54 +207,10 @@ class RedisStateMachine implements StateMachine {
 await machine.update('settlement-1', { settleTxHash: '0x7c6a7fe8...' });
 ```
 
-### `afterSettleTimeout` hook
-
-```ts
-app.use(
-  createRecoveryMiddleware({
-    profile: 'batch',
-    rpcUrl: process.env.BASE_RPC_URL!,
-    afterSettleTimeout: async (payload) => {
-      console.log(payload.scheme, payload.facilitatorResponse);
-    },
-  }),
-);
-```
-
-### Beav3r pre-execution guard
-
-```ts
-import { guardedPayment, PROFILES } from 'x402-recovery';
-
-const result = await guardedPayment({
-  action: {
-    type: 'payout',
-    amount: '1000000',
-    recipient: '0xRecipient',
-  },
-  settlement: {
-    settlementId: 'settlement-1',
-    txHash: '0xdead...',
-    validBefore: Date.now() + 120_000,
-  },
-  profile: 'emerging_markets',
-  beav3rAccountId: 'your-account-id',
-});
-
-console.log(result.authorized, result.settlementState);
-```
-
-Install the optional peer:
-
-```bash
-npm install @beav3r/sdk
-```
-
 ## Production
 
 - The default state machine is in-memory and per-process. Provide a persistent `StateMachine` for production.
 - For horizontal scaling, all workers must share the same `StateMachine`.
-- Dispatcher mode requires shared state. The package does not provide a queue.
 - If the facilitator response has no `txHash`, the settlement is recorded as `unresolved` and not polled.
 - `value` and `nonce` are strings by design.
 - Use `canonicalKey` as the durable identity for retries and persistence.
