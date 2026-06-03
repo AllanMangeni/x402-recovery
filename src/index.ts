@@ -23,3 +23,5 @@ export { createViemReceiptProvider } from './adapters/viem';
 export * from './adapters';
 export { createRecoveryHook, RecoveryPlugin } from './hooks';
 export type { SettlementFailureContext, RecoveryHookConfig } from './hooks';
+export { RecoveryError, isRecoveryError } from './errors';
+export type { RecoveryErrorDetails } from './errors';
