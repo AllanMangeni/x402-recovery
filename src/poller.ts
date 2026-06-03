@@ -1,5 +1,6 @@
 import { StateMachine } from './state-machine';
 import { SettlementState, SettlementProfile, ReceiptProvider, AfterSettleTimeoutHook } from './types';
+import { RecoveryError } from './errors';
 
 export interface PollUntilResolvedParams {
   id: string;
@@ -135,7 +136,7 @@ export async function pollUntilResolved(
   const record = await machine.get(id);
 
   if (!record) {
-    throw new Error(`Settlement ${id} not found`);
+    throw new RecoveryError('settlement_not_found', 404, `Settlement ${id} not found`, { settlementId: id });
   }
 
   const createdAt = record.createdAt;

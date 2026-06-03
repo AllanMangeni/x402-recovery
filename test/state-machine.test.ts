@@ -62,7 +62,7 @@ describe('SettlementStateMachine', () => {
     machine.create('tx-4');
 
     expect(() => machine.create('tx-4')).toThrow(
-      'Settlement tx-4 already exists',
+      expect.objectContaining({ code: 'settlement_already_exists' }),
     );
   });
 
@@ -71,13 +71,13 @@ describe('SettlementStateMachine', () => {
 
     expect(() =>
       machine.create('tx-5', { profileName: 'unknown_profile' as any }),
-    ).toThrow('Unknown settlement profile: unknown_profile');
+    ).toThrow(expect.objectContaining({ code: 'profile_unknown' }));
   });
 
   it('throws when transitioning a missing id', () => {
     const machine = createSettlementStateMachine();
     expect(() => machine.transition('nonexistent', SettlementState.Confirmed)).toThrow(
-      'Settlement nonexistent not found',
+      expect.objectContaining({ code: 'settlement_not_found' }),
     );
   });
 
@@ -456,7 +456,7 @@ describe('defineProfile', () => {
         maxPollWindowMs: 60_000,
         requiredConfirmations: 0,
       }),
-    ).toThrow('must be greater than 0');
+    ).toThrow(expect.objectContaining({ code: 'profile_invalid' }));
 
     expect(() =>
       defineProfile({
@@ -466,7 +466,7 @@ describe('defineProfile', () => {
         maxPollWindowMs: 60_000,
         requiredConfirmations: 1.5,
       }),
-    ).toThrow('must be greater than 0');
+    ).toThrow(expect.objectContaining({ code: 'profile_invalid' }));
   });
 
   it('accepts valid requiredConfirmations', () => {
@@ -489,7 +489,7 @@ describe('defineProfile', () => {
         pollIntervalMs: 50_000,
         maxPollWindowMs: 50_000,
       }),
-    ).toThrow('must be less than maxPollWindowMs');
+    ).toThrow(expect.objectContaining({ code: 'profile_invalid' }));
   });
 
   it('throws when facilitatorTimeoutMs >= maxPollWindowMs', () => {
@@ -500,7 +500,7 @@ describe('defineProfile', () => {
         pollIntervalMs: 3_000,
         maxPollWindowMs: 60_000,
       }),
-    ).toThrow('must be less than maxPollWindowMs');
+    ).toThrow(expect.objectContaining({ code: 'profile_invalid' }));
   });
 
   it('throws when any timing value is <= 0', () => {
@@ -511,7 +511,7 @@ describe('defineProfile', () => {
         pollIntervalMs: 3_000,
         maxPollWindowMs: 60_000,
       }),
-    ).toThrow('must be greater than 0');
+    ).toThrow(expect.objectContaining({ code: 'profile_invalid' }));
   });
 
   it('machine.create accepts a direct SettlementProfile object', () => {
@@ -579,11 +579,11 @@ describe('normalizeValidBefore', () => {
   });
 
   it('throws on zero or negative input', () => {
-    expect(() => normalizeValidBefore(0)).toThrow('expected positive number');
-    expect(() => normalizeValidBefore(-1)).toThrow('expected positive number');
+    expect(() => normalizeValidBefore(0)).toThrow(expect.objectContaining({ code: 'valid_before_invalid' }));
+    expect(() => normalizeValidBefore(-1)).toThrow(expect.objectContaining({ code: 'valid_before_invalid' }));
   });
 
   it('throws on invalid string input', () => {
-    expect(() => normalizeValidBefore('invalid')).toThrow('expected positive number');
+    expect(() => normalizeValidBefore('invalid')).toThrow(expect.objectContaining({ code: 'valid_before_invalid' }));
   });
 });

@@ -1,3 +1,5 @@
+import { RecoveryError } from './errors';
+
 export enum SettlementState {
   Created = 'created',
   Confirmed = 'confirmed',
@@ -68,20 +70,24 @@ export function defineProfile(profile: {
   indexerLagMs?: number;
 }): SettlementProfile {
   if (profile.pollIntervalMs >= profile.maxPollWindowMs) {
-    throw new Error(
-      `defineProfile: pollIntervalMs (${profile.pollIntervalMs}) must be less than maxPollWindowMs (${profile.maxPollWindowMs})`
+    throw new RecoveryError(
+      'profile_invalid', 400,
+      `pollIntervalMs (${profile.pollIntervalMs}) must be less than maxPollWindowMs (${profile.maxPollWindowMs})`,
+      { pollIntervalMs: profile.pollIntervalMs, maxPollWindowMs: profile.maxPollWindowMs },
     );
   }
   if (profile.facilitatorTimeoutMs >= profile.maxPollWindowMs) {
-    throw new Error(
-      `defineProfile: facilitatorTimeoutMs (${profile.facilitatorTimeoutMs}) must be less than maxPollWindowMs (${profile.maxPollWindowMs})`
+    throw new RecoveryError(
+      'profile_invalid', 400,
+      `facilitatorTimeoutMs (${profile.facilitatorTimeoutMs}) must be less than maxPollWindowMs (${profile.maxPollWindowMs})`,
+      { facilitatorTimeoutMs: profile.facilitatorTimeoutMs, maxPollWindowMs: profile.maxPollWindowMs },
     );
   }
   if (profile.facilitatorTimeoutMs <= 0 || profile.pollIntervalMs <= 0 || profile.maxPollWindowMs <= 0) {
-    throw new Error('defineProfile: all timing values must be greater than 0');
+    throw new RecoveryError('profile_invalid', 400, 'All timing values must be greater than 0', { timingValues: { facilitatorTimeoutMs: profile.facilitatorTimeoutMs, pollIntervalMs: profile.pollIntervalMs, maxPollWindowMs: profile.maxPollWindowMs } });
   }
   if (profile.requiredConfirmations !== undefined && (!Number.isInteger(profile.requiredConfirmations) || profile.requiredConfirmations <= 0)) {
-    throw new Error('defineProfile: requiredConfirmations must be greater than 0');
+    throw new RecoveryError('profile_invalid', 400, 'requiredConfirmations must be greater than 0', { requiredConfirmations: profile.requiredConfirmations });
   }
   return profile;
 }
@@ -116,7 +122,7 @@ export function canonicalKey(input: {
 export function normalizeValidBefore(input: number | bigint | string): number {
   const asNum = typeof input === 'string' ? Number(input) : Number(input);
   if (!Number.isFinite(asNum) || asNum <= 0) {
-    throw new Error(`normalizeValidBefore: expected positive number, received ${input}`);
+    throw new RecoveryError('valid_before_invalid', 400, `Expected positive number, received ${String(input)}`, { input: String(input) });
   }
   // Heuristic: if value is under year 33658 in seconds (~1e12 ms), treat as
   // seconds and convert to milliseconds. Values above this threshold are
