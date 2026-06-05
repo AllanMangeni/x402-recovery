@@ -10,11 +10,13 @@ import {
   PROFILES,
   ReceiptProvider,
   TERMINAL_STATES,
+  ACTIVE_POLLING_STATES,
   normalizeValidBefore,
   AfterSettleTimeoutHook,
 } from './types';
 import { createViemReceiptProvider } from './adapters/viem';
 import { RecoveryError } from './errors';
+import { logError } from './log';
 
 /**
  * Duck-typed context received from x402 v2 onSettleFailure / onUncertainSettlement hooks.
@@ -51,16 +53,6 @@ export interface RecoveryHookConfig {
   afterSettleTimeout?: AfterSettleTimeoutHook;
 }
 
-function logError(err: RecoveryError): void {
-  console.error({
-    event: err.code,
-    ...err.toJSON(),
-    timestamp: Date.now(),
-  });
-}
-
-
-
 async function getOrCreateRecord(
   machine: StateMachine,
   id: string,
@@ -68,13 +60,7 @@ async function getOrCreateRecord(
 ): Promise<SettlementRecord | undefined> {
   const existing = await machine.get(id);
   if (existing) return existing;
-  try {
-    return await machine.create(id, opts);
-  } catch (createErr) {
-    const retried = await machine.get(id);
-    if (retried) return retried;
-    throw createErr;
-  }
+  return await machine.create(id, opts);
 }
 
 /**
@@ -151,10 +137,17 @@ export function createRecoveryHook(config: RecoveryHookConfig) {
       return;
     }
 
+    if (ACTIVE_POLLING_STATES.has(record.state)) {
+      return;
+    }
+
     if (!txHash) {
+      logError(new RecoveryError('settlement_no_txhash', 400, `Settlement ${settlementId} has no txHash; transitioning to unresolved`, { settlementId }));
       try {
         await machine.transition(settlementId, SettlementState.Unresolved);
-      } catch {}
+      } catch (err) {
+        logError(new RecoveryError('settlement_transition_failed', 500, `Failed to transition ${settlementId} to unresolved: ${String(err)}`, { settlementId }));
+      }
       return;
     }
 
@@ -172,7 +165,9 @@ export function createRecoveryHook(config: RecoveryHookConfig) {
             scheme: 'exact',
           }),
         );
-      } catch {}
+      } catch (err) {
+        logError(new RecoveryError('after_settle_timeout_failed', 500, `afterSettleTimeout failed for ${settlementId}: ${String(err)}`, { settlementId }));
+      }
     }
 
     // Fire-and-forget polling — never block the calling settlement flow.
@@ -187,7 +182,9 @@ export function createRecoveryHook(config: RecoveryHookConfig) {
       logError(error);
       try {
         machine.transition(settlementId, SettlementState.Unresolved);
-      } catch {}
+      } catch (transitionErr) {
+        logError(new RecoveryError('settlement_transition_failed', 500, `Failed to transition ${settlementId} to unresolved after poller failure: ${String(transitionErr)}`, { settlementId }));
+      }
     });
   };
 }
