@@ -190,6 +190,59 @@ describe('createRecoveryHook', () => {
     );
   });
 
+  it('does not start a second poller when record is already polling', async () => {
+    const machine = createSettlementStateMachine();
+    machine.create('0xpolling', { profileName: 'datacenter', txHash: '0xpolling' });
+    machine.transition('0xpolling', SettlementState.Polling);
+
+    const pollSpy = vi
+      .spyOn(pollerModule, 'pollUntilResolved')
+      .mockResolvedValue({ id: '0xpolling', state: SettlementState.Confirmed });
+
+    const hook = createRecoveryHook({
+      profile: 'datacenter',
+      receiptProvider: fakeReceiptProvider(),
+      stateMachine: machine,
+    });
+
+    const context: SettlementFailureContext = {
+      error: new Error('fail'),
+      result: { transaction: { hash: '0xpolling' } },
+    };
+
+    await hook(context);
+
+    await new Promise((r) => setTimeout(r, 50));
+    expect(pollSpy).not.toHaveBeenCalled();
+  });
+
+  it('logs error when txHash is missing and omits sensitive details', async () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const hook = createRecoveryHook({
+      profile: 'datacenter',
+      receiptProvider: fakeReceiptProvider(),
+    });
+
+    const context: SettlementFailureContext = {
+      error: new Error('no tx'),
+      paymentPayload: {
+        from: '0xPayer',
+        value: '1000',
+      },
+    };
+
+    await hook(context);
+
+    await new Promise((r) => setTimeout(r, 50));
+    expect(consoleSpy).toHaveBeenCalled();
+    const call = consoleSpy.mock.calls[0]![0] as any;
+    expect(call.code).toBe('settlement_no_txhash');
+    expect(call.details).toBeUndefined();
+
+    consoleSpy.mockRestore();
+  });
+
   it('fires afterSettleTimeout hook before polling', async () => {
     const afterHook = vi.fn();
     const pollSpy = vi
@@ -255,6 +308,49 @@ describe('createRecoveryHook', () => {
     );
   });
 
+  it('logs afterSettleTimeout errors instead of swallowing silently', async () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const afterHook = vi.fn(() => {
+      throw new Error('hook crash');
+    });
+    const pollSpy = vi
+      .spyOn(pollerModule, 'pollUntilResolved')
+      .mockResolvedValue({ id: '0xhookCrash', state: SettlementState.Confirmed });
+
+    const hook = createRecoveryHook({
+      profile: 'datacenter',
+      receiptProvider: fakeReceiptProvider(),
+      afterSettleTimeout: afterHook,
+    });
+
+    const context: SettlementFailureContext = {
+      error: new Error('fail'),
+      paymentPayload: {
+        transaction: { hash: '0xhookCrash' },
+      },
+    };
+
+    await hook(context);
+
+    await vi.waitFor(
+      () => {
+        expect(pollSpy).toHaveBeenCalledOnce();
+      },
+      { timeout: 200 },
+    );
+
+    expect(consoleSpy).toHaveBeenCalled();
+    const call = consoleSpy.mock.calls.find((c) => {
+      const arg = c[0] as any;
+      return arg?.code === 'after_settle_timeout_failed';
+    });
+    expect(call).toBeDefined();
+    const arg = call![0] as any;
+    expect(arg.details).toBeUndefined();
+
+    consoleSpy.mockRestore();
+  });
+
   it('isolates 50 concurrent hook invocations without cross-contamination', async () => {
     const pollSpy = vi
       .spyOn(pollerModule, 'pollUntilResolved')
@@ -280,6 +376,33 @@ describe('createRecoveryHook', () => {
         expect(pollSpy).toHaveBeenCalledTimes(count);
       },
       { timeout: 500 },
+    );
+  });
+
+  it('prevents duplicate poller under concurrent same-id calls', async () => {
+    const pollSpy = vi
+      .spyOn(pollerModule, 'pollUntilResolved')
+      .mockResolvedValue({ id: '0xsame', state: SettlementState.Confirmed });
+
+    const hook = createRecoveryHook({
+      profile: 'datacenter',
+      receiptProvider: fakeReceiptProvider(),
+    });
+
+    const context: SettlementFailureContext = {
+      error: new Error('fail'),
+      paymentPayload: {
+        transaction: { hash: '0xsame' },
+      },
+    };
+
+    await Promise.all([hook(context), hook(context)]);
+
+    await vi.waitFor(
+      () => {
+        expect(pollSpy).toHaveBeenCalledOnce();
+      },
+      { timeout: 200 },
     );
   });
 

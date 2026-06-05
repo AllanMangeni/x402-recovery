@@ -28,6 +28,19 @@ export class RecoveryError extends Error {
       details: this.details,
     };
   }
+
+  /**
+   * Returns a JSON representation without `details`, suitable for
+   * logging to third-party services where tx hashes or payer addresses
+   * should not leak.
+   */
+  toSafeJSON() {
+    return {
+      code: this.code,
+      statusCode: this.statusCode,
+      message: this.message,
+    };
+  }
 }
 
 export function isRecoveryError(error: unknown): error is RecoveryError {

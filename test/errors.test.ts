@@ -40,4 +40,14 @@ describe('RecoveryError', () => {
     expect(err.code).toBe('settlement_not_found');
     expect(err.statusCode).toBe(404);
   });
+
+  it('toSafeJSON omits details to avoid leaking sensitive data', () => {
+    const err = new RecoveryError('safe_test', 500, 'Server error', { txHash: '0xsecret', payer: '0xalice' });
+    expect(err.toSafeJSON()).toEqual({
+      code: 'safe_test',
+      statusCode: 500,
+      message: 'Server error',
+    });
+    expect(err.toSafeJSON().details).toBeUndefined();
+  });
 });

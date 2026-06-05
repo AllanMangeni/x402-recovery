@@ -3,6 +3,7 @@ export type { StateMachine, SettlementRecord, CreateSettlementOptions, Settlemen
 export {
   SettlementState,
   TERMINAL_STATES,
+  ACTIVE_POLLING_STATES,
   PROFILES,
   canonicalKey,
   batchCanonicalKey,

@@ -157,6 +157,52 @@ describe('pollUntilResolved', () => {
     expect(record!.state).toBe(SettlementState.Unresolved);
   });
 
+  it('rejects receipt whose txHash does not match the requested txHash', async () => {
+    const profile = { ...PROFILES.datacenter, pollIntervalMs: 10, maxPollWindowMs: 100 };
+    const txHash = '0xdeadbeef' as `0x${string}`;
+
+    machine.create('settlement-wrong-tx', { profileName: 'datacenter', txHash });
+
+    const receiptProvider = fakeReceiptProvider({
+      [txHash]: { status: 'success', confirmations: 1, txHash: '0xwronghash' },
+    });
+
+    await pollUntilResolved({
+      id: 'settlement-wrong-tx',
+      txHash,
+      profile,
+      machine,
+      receiptProvider,
+    });
+
+    const record = machine.get('settlement-wrong-tx');
+    expect(record!.state).toBe(SettlementState.Failed);
+  });
+
+  it('retries on RPC timeout and eventually fails when deadline expires', async () => {
+    const profile = { ...PROFILES.datacenter, rpcTimeoutMs: 50, pollIntervalMs: 10, maxPollWindowMs: 200 };
+    const txHash = '0xdeadbeef' as `0x${string}`;
+
+    machine.create('settlement-timeout', { profileName: 'datacenter', txHash });
+
+    const receiptProvider = {
+      getTransactionReceipt: async () => {
+        await new Promise((r) => setTimeout(r, 500));
+        return { status: 'success', confirmations: 1 } as any;
+      },
+    };
+
+    const result = await pollUntilResolved({
+      id: 'settlement-timeout',
+      txHash,
+      profile,
+      machine,
+      receiptProvider,
+    });
+
+    expect(result.state).toBe(SettlementState.Failed);
+  });
+
   it('keeps polling on transaction-not-found error', async () => {
     const profile = PROFILES.datacenter;
     const txHash = '0xdeadbeef' as `0x${string}`;
@@ -1230,5 +1276,31 @@ describe('v0.3.0 — afterSettleTimeout hook', () => {
     const record = machine.get('batch-wait-settle');
     expect(record!.state).toBe(SettlementState.SettleConfirmed);
     expect(record!.settleTxHash).toBe(settleTxHash);
+  });
+
+  it('batch scheme rejects claim receipt with wrong txHash', async () => {
+    const profile = { ...PROFILES.batch, pollIntervalMs: 10, maxPollWindowMs: 100 };
+    const claimTxHash = '0xclaimwrong' as `0x${string}`;
+
+    machine.create('batch-wrong-tx', {
+      profileName: 'batch',
+      scheme: 'batch',
+      claimTxHash,
+    });
+
+    const receiptProvider = fakeReceiptProvider({
+      [claimTxHash]: { status: 'success', confirmations: 1, txHash: '0xwronghash' },
+    });
+
+    await pollUntilResolved({
+      id: 'batch-wrong-tx',
+      txHash: claimTxHash,
+      profile,
+      machine,
+      receiptProvider,
+    });
+
+    const record = machine.get('batch-wrong-tx');
+    expect(record!.state).toBe(SettlementState.Failed);
   });
 });

@@ -23,6 +23,12 @@ export const TERMINAL_STATES: ReadonlySet<SettlementState> = new Set([
   SettlementState.SettleConfirmed,
 ]);
 
+export const ACTIVE_POLLING_STATES: ReadonlySet<SettlementState> = new Set([
+  SettlementState.Polling,
+  SettlementState.ClaimPending,
+  SettlementState.SettlePending,
+]);
+
 export interface SettlementProfile {
   name: string;
   facilitatorTimeoutMs: number;
@@ -30,6 +36,7 @@ export interface SettlementProfile {
   maxPollWindowMs: number;
   requiredConfirmations?: number;
   indexerLagMs?: number;
+  rpcTimeoutMs?: number;
 }
 
 export const PROFILES = {
@@ -68,6 +75,7 @@ export function defineProfile(profile: {
   maxPollWindowMs: number;
   requiredConfirmations?: number;
   indexerLagMs?: number;
+  rpcTimeoutMs?: number;
 }): SettlementProfile {
   if (profile.pollIntervalMs >= profile.maxPollWindowMs) {
     throw new RecoveryError(
@@ -88,6 +96,9 @@ export function defineProfile(profile: {
   }
   if (profile.requiredConfirmations !== undefined && (!Number.isInteger(profile.requiredConfirmations) || profile.requiredConfirmations <= 0)) {
     throw new RecoveryError('profile_invalid', 400, 'requiredConfirmations must be greater than 0', { requiredConfirmations: profile.requiredConfirmations });
+  }
+  if (profile.rpcTimeoutMs !== undefined && (typeof profile.rpcTimeoutMs !== 'number' || profile.rpcTimeoutMs <= 0 || !Number.isFinite(profile.rpcTimeoutMs))) {
+    throw new RecoveryError('profile_invalid', 400, 'rpcTimeoutMs must be a positive finite number', { rpcTimeoutMs: profile.rpcTimeoutMs });
   }
   return profile;
 }
@@ -165,6 +176,7 @@ export interface SettlementReceipt {
   status: 'success' | 'reverted' | 'unknown';
   blockNumber?: bigint;
   confirmations?: number;
+  txHash?: string;
 }
 
 export interface AfterSettleTimeoutPayload {

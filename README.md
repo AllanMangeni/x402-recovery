@@ -209,11 +209,13 @@ await machine.update('settlement-1', { settleTxHash: '0x7c6a7fe8...' });
 
 ## Production
 
-- The default state machine is in-memory and per-process. Provide a persistent `StateMachine` for production.
+- The default state machine is in-memory and per-process. Provide a persistent `StateMachine` for production. Recoveries disappear on process restart.
 - For horizontal scaling, all workers must share the same `StateMachine`.
+- Terminal records remain in memory indefinitely. Long-running services should implement TTL or eviction in their custom `StateMachine`.
 - If the facilitator response has no `txHash`, the settlement is recorded as `unresolved` and not polled.
 - `value` and `nonce` are strings by design.
 - Use `canonicalKey` as the durable identity for retries and persistence.
+- Logging uses `toSafeJSON()` by default to avoid leaking tx hashes or payer addresses to external log services.
 
 ## Related
 

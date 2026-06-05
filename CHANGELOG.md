@@ -1,5 +1,31 @@
 # x402-recovery
 
+## [0.4.1] - 2026-06-05
+
+### Security
+
+- Prevent duplicate pollers for the same settlement ID (P0-001)
+- Verify receipt txHash matches the requested hash before accepting success (P0-002)
+
+### Fixed
+
+- Add RPC timeout wrapper with timer cleanup to prevent hanging polls (P1-003)
+- Surface all silently swallowed errors in hooks and poller (P1-001, P1-002)
+- Strengthen `TransactionNotFound` error detection via `error.code` (P1-006)
+- Add `RecoveryError.toSafeJSON()` for sensitive-error logging without leaking details (P2-001)
+- Prevent zero or negative confirmation counts after chain reorgs (P2-003)
+- Tighten release workflow permissions by removing unnecessary `contents: write` (P2-002)
+
+### Changed
+
+- Extract shared `logError` utility for consistent structured logging
+- Simplify `getOrCreateRecord` retry logic — duplicate-poller guard handles common case
+- Default `rpcTimeoutMs` falls back to `facilitatorTimeoutMs / 2` when not specified
+
+### Tests
+
+- 11 new tests covering duplicate-poller guard, receipt verification, RPC timeout, and safe JSON
+
 ## [0.4.0] - 2026-06-02
 
 ### Added

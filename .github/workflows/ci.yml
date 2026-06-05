@@ -10,6 +10,8 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     strategy:
@@ -27,6 +29,8 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
@@ -41,6 +45,8 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
@@ -56,3 +62,25 @@ jobs:
           name: dist
           path: dist/
           retention-days: 7
+
+  smoke-test:
+    name: Artifact smoke test
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: read
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm pack
+      - run: mkdir /tmp/smoke && cd /tmp/smoke && npm init -y
+      - run: cd /tmp/smoke && npm install $(ls ${{ github.workspace }}/*.tgz | head -1)
+      - run: node -e "const r = require('x402-recovery'); console.log('CJS:', typeof r.createRecoveryHook);"
+      - run: node --input-type=module -e "import * as r from 'x402-recovery'; console.log('ESM:', typeof r.createRecoveryHook);"

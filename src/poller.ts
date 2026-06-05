@@ -1,6 +1,7 @@
 import { StateMachine } from './state-machine';
-import { SettlementState, SettlementProfile, ReceiptProvider, AfterSettleTimeoutHook } from './types';
+import { SettlementState, SettlementProfile, ReceiptProvider, AfterSettleTimeoutHook, SettlementReceipt } from './types';
 import { RecoveryError } from './errors';
+import { logError } from './log';
 
 export interface PollUntilResolvedParams {
   id: string;
@@ -19,9 +20,18 @@ function defaultDelay(ms: number): Promise<void> {
 }
 
 function isTransactionNotFoundError(error: unknown): boolean {
+  if (error instanceof RecoveryError && error.code === 'rpc_timeout') {
+    return true;
+  }
   if (error instanceof Error) {
     if (error.name === 'TransactionNotFoundError') {
       return true;
+    }
+    if ('code' in error && typeof (error as Record<string, unknown>).code === 'string') {
+      const code = (error as Record<string, unknown>).code as string;
+      if (code === 'TransactionNotFound' || code === 'TRANSACTION_NOT_FOUND') {
+        return true;
+      }
     }
     if ('shortMessage' in error && typeof (error as Record<string, unknown>).shortMessage === 'string') {
       return ((error as Record<string, unknown>).shortMessage as string).includes('Transaction not found');
@@ -32,6 +42,29 @@ function isTransactionNotFoundError(error: unknown): boolean {
     }
   }
   return false;
+}
+
+async function getReceiptWithTimeout(
+  receiptProvider: ReceiptProvider,
+  txHash: `0x${string}`,
+  timeoutMs: number,
+): Promise<SettlementReceipt | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new RecoveryError('rpc_timeout', 504, `RPC call timed out after ${timeoutMs}ms`, { txHash, timeoutMs }));
+    }, timeoutMs);
+  });
+
+  try {
+    const receipt = await Promise.race([
+      receiptProvider.getTransactionReceipt({ txHash }),
+      timeoutPromise,
+    ]);
+    return receipt;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 async function pollReceiptLoop(params: {
@@ -60,9 +93,15 @@ async function pollReceiptLoop(params: {
     }
 
     let receipt;
+    const rpcTimeoutMs = profile.rpcTimeoutMs ?? Math.floor(profile.facilitatorTimeoutMs / 2);
     try {
-      receipt = await receiptProvider.getTransactionReceipt({ txHash });
+      receipt = await getReceiptWithTimeout(receiptProvider, txHash, rpcTimeoutMs);
     } catch (error) {
+      if (error instanceof RecoveryError && error.code === 'rpc_timeout') {
+        logError(error);
+        await delay(profile.pollIntervalMs);
+        continue;
+      }
       if (isTransactionNotFoundError(error)) {
         await delay(profile.pollIntervalMs);
         continue;
@@ -72,6 +111,11 @@ async function pollReceiptLoop(params: {
     }
 
     if (!receipt) {
+      await delay(profile.pollIntervalMs);
+      continue;
+    }
+
+    if (receipt.txHash !== undefined && receipt.txHash.toLowerCase() !== txHash.toLowerCase()) {
       await delay(profile.pollIntervalMs);
       continue;
     }
@@ -156,7 +200,9 @@ export async function pollUntilResolved(
         facilitatorResponse: record.facilitatorResponse,
         scheme,
       }));
-    } catch {}
+    } catch (err) {
+      logError(new RecoveryError('after_settle_timeout_failed', 500, `afterSettleTimeout failed for ${id}: ${String(err)}`, { settlementId: id }));
+    }
   }
 
   if (scheme === 'batch') {
