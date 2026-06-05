@@ -25,7 +25,7 @@ export function createViemReceiptProvider(client: PublicClient): ReceiptProvider
       if (receipt.blockNumber != null) {
         try {
           const currentBlockNumber = await client.getBlockNumber();
-          confirmations = Number(currentBlockNumber - receipt.blockNumber) + 1;
+          confirmations = Math.max(1, Number(currentBlockNumber - receipt.blockNumber) + 1);
         } catch {
           // cannot compute confirmations — leave undefined
         }
@@ -35,6 +35,7 @@ export function createViemReceiptProvider(client: PublicClient): ReceiptProvider
         status,
         blockNumber: receipt.blockNumber,
         confirmations,
+        txHash: receipt.transactionHash ?? input.txHash,
       };
     },
   };
