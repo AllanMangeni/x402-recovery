@@ -122,7 +122,7 @@ describe('createViemReceiptProvider', () => {
     expect(result!.txHash).toBe('0xabc');
   });
 
-  it('never returns zero or negative confirmations on reorg', async () => {
+  it('returns zero confirmations on reorg so poller keeps retrying', async () => {
     const client = fakePublicClient(
       { status: 'success', blockNumber: 200n },
       100n, // current block is behind receipt block (reorg)
@@ -130,6 +130,6 @@ describe('createViemReceiptProvider', () => {
     const provider = createViemReceiptProvider(client);
 
     const result = await provider.getTransactionReceipt({ txHash: '0xabc' as `0x${string}` });
-    expect(result!.confirmations).toBe(1);
+    expect(result!.confirmations).toBe(0);
   });
 });

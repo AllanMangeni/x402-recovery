@@ -25,7 +25,12 @@ export function createViemReceiptProvider(client: PublicClient): ReceiptProvider
       if (receipt.blockNumber != null) {
         try {
           const currentBlockNumber = await client.getBlockNumber();
-          confirmations = Math.max(1, Number(currentBlockNumber - receipt.blockNumber) + 1);
+          confirmations = Number(currentBlockNumber - receipt.blockNumber) + 1;
+          // If negative or zero, the transaction was likely reorged out.
+          // Return 0 so the poller treats it as unconfirmed and keeps polling.
+          if (confirmations <= 0) {
+            confirmations = 0;
+          }
         } catch {
           // cannot compute confirmations — leave undefined
         }
