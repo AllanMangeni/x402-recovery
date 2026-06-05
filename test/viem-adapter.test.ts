@@ -5,12 +5,14 @@ import type { ReceiptProvider, SettlementReceipt } from '../src/types';
 interface FakeViemReceipt {
   status: string;
   blockNumber?: bigint;
+  transactionHash?: string;
 }
 
 function fakePublicClient(receipt: FakeViemReceipt | null, blockNumber?: bigint) {
   return {
     getTransactionReceipt: async () => receipt,
     getBlockNumber: async () => blockNumber ?? 0n,
+    chain: { id: 8453, name: 'base' },
   } as any;
 }
 
@@ -91,6 +93,39 @@ describe('createViemReceiptProvider', () => {
     const client = fakePublicClient(
       { status: 'success', blockNumber: 100n },
       100n,
+    );
+    const provider = createViemReceiptProvider(client);
+
+    const result = await provider.getTransactionReceipt({ txHash: '0xabc' as `0x${string}` });
+    expect(result!.confirmations).toBe(1);
+  });
+
+  it('populates txHash from receipt.transactionHash', async () => {
+    const client = fakePublicClient(
+      { status: 'success', blockNumber: 100n, transactionHash: '0xabc' },
+      100n,
+    );
+    const provider = createViemReceiptProvider(client);
+
+    const result = await provider.getTransactionReceipt({ txHash: '0xabc' as `0x${string}` });
+    expect(result!.txHash).toBe('0xabc');
+  });
+
+  it('falls back to input txHash when receipt has no transactionHash', async () => {
+    const client = fakePublicClient(
+      { status: 'success', blockNumber: 100n },
+      100n,
+    );
+    const provider = createViemReceiptProvider(client);
+
+    const result = await provider.getTransactionReceipt({ txHash: '0xabc' as `0x${string}` });
+    expect(result!.txHash).toBe('0xabc');
+  });
+
+  it('never returns zero or negative confirmations on reorg', async () => {
+    const client = fakePublicClient(
+      { status: 'success', blockNumber: 200n },
+      100n, // current block is behind receipt block (reorg)
     );
     const provider = createViemReceiptProvider(client);
 
