@@ -13,7 +13,7 @@
   },
   "sideEffects": false,
   "scripts": {
-    "build": "rm -rf dist && tsc && tsc -p tsconfig.esm.json",
+    "build": "rm -rf dist && tsc && tsc -p tsconfig.esm.json && cp src/esm-package.json dist/esm/package.json && node scripts/fix-esm-imports.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "tsc --noEmit",
@@ -31,6 +31,9 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/AllanMangeni/x402-recovery.git"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   },
   "files": [
     "dist",
