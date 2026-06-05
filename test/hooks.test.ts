@@ -216,7 +216,7 @@ describe('createRecoveryHook', () => {
     expect(pollSpy).not.toHaveBeenCalled();
   });
 
-  it('logs error when txHash is missing', async () => {
+  it('logs error when txHash is missing and omits sensitive details', async () => {
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     const hook = createRecoveryHook({
@@ -238,6 +238,7 @@ describe('createRecoveryHook', () => {
     expect(consoleSpy).toHaveBeenCalled();
     const call = consoleSpy.mock.calls[0]![0] as any;
     expect(call.code).toBe('settlement_no_txhash');
+    expect(call.details).toBeUndefined();
 
     consoleSpy.mockRestore();
   });
@@ -344,6 +345,8 @@ describe('createRecoveryHook', () => {
       return arg?.code === 'after_settle_timeout_failed';
     });
     expect(call).toBeDefined();
+    const arg = call![0] as any;
+    expect(arg.details).toBeUndefined();
 
     consoleSpy.mockRestore();
   });
@@ -373,6 +376,33 @@ describe('createRecoveryHook', () => {
         expect(pollSpy).toHaveBeenCalledTimes(count);
       },
       { timeout: 500 },
+    );
+  });
+
+  it('prevents duplicate poller under concurrent same-id calls', async () => {
+    const pollSpy = vi
+      .spyOn(pollerModule, 'pollUntilResolved')
+      .mockResolvedValue({ id: '0xsame', state: SettlementState.Confirmed });
+
+    const hook = createRecoveryHook({
+      profile: 'datacenter',
+      receiptProvider: fakeReceiptProvider(),
+    });
+
+    const context: SettlementFailureContext = {
+      error: new Error('fail'),
+      paymentPayload: {
+        transaction: { hash: '0xsame' },
+      },
+    };
+
+    await Promise.all([hook(context), hook(context)]);
+
+    await vi.waitFor(
+      () => {
+        expect(pollSpy).toHaveBeenCalledOnce();
+      },
+      { timeout: 200 },
     );
   });
 
