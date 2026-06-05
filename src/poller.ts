@@ -97,6 +97,11 @@ async function pollReceiptLoop(params: {
     try {
       receipt = await getReceiptWithTimeout(receiptProvider, txHash, rpcTimeoutMs);
     } catch (error) {
+      if (error instanceof RecoveryError && error.code === 'rpc_timeout') {
+        logError(error);
+        await delay(profile.pollIntervalMs);
+        continue;
+      }
       if (isTransactionNotFoundError(error)) {
         await delay(profile.pollIntervalMs);
         continue;
